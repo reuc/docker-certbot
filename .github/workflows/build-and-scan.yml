@@ -1,0 +1,83 @@
+name: build-and-scan
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # Daily rebuild so new CVEs (and new Wolfi fixes) are caught without a code change.
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-scan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [shell, distroless]
+    env:
+      TAG: ci-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Install grype
+        id: grype
+        uses: anchore/scan-action/download-grype@v6
+
+      - name: Build
+        # NO_CACHE so every run resolves the latest Wolfi packages.
+        run: make build-${{ matrix.variant }} NO_CACHE=1
+
+      - name: Smoke test
+        run: make test-${{ matrix.variant }}
+
+      - name: CVE gate
+        env:
+          GRYPE: ${{ steps.grype.outputs.cmd }}
+        run: make scan-${{ matrix.variant }} GRYPE="$GRYPE"
+
+      - name: Job summary
+        if: always()
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          f="reports/${VARIANT}-grype.json"
+          [ -f "$f" ] || { echo "No grype report for ${VARIANT}." >> "$GITHUB_STEP_SUMMARY"; exit 0; }
+          {
+            echo "### CVE scan: ${VARIANT}"
+            echo
+            echo "| Severity | Unique CVEs |"
+            echo "|---|---|"
+            for s in Critical High Medium Low Negligible Unknown; do
+              n=$(jq --arg s "$s" '[.matches[] | select(.vulnerability.severity == $s) | .vulnerability.id] | unique | length' "$f")
+              echo "| $s | $n |"
+            done
+            echo
+            echo "<details><summary>Findings</summary>"
+            echo
+            echo "| Severity | ID | Package | Installed | Fixed in |"
+            echo "|---|---|---|---|---|"
+            jq -r '.matches[] | "| \(.vulnerability.severity) | \(.vulnerability.id) | \(.artifact.name) | \(.artifact.version) | \(.vulnerability.fix.versions | join(", ")) |"' "$f" | sort -u
+            echo
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload grype report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: grype-${{ matrix.variant }}
+          path: reports/
+          if-no-files-found: ignore
+          retention-days: 30
