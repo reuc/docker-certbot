@@ -1,5 +1,7 @@
 # wolfi-polyglot
 
+[![build-and-scan](https://github.com/reuc/docker-wolfi/actions/workflows/build-and-scan.yml/badge.svg)](https://github.com/reuc/docker-wolfi/actions/workflows/build-and-scan.yml)
+
 Hardened container images built on [Wolfi](https://github.com/wolfi-dev). Each image contains:
 
 - **Python 3.14.x**, with pip and the dev headers
@@ -154,10 +156,11 @@ docker run --rm \
 1. **Only the listed packages get in.** A throwaway `wolfi-base` stage installs them into an empty root folder with `apk add --root … --initdb --no-scripts`. That folder is copied into `FROM scratch`, so nothing else from the builder lands in the final image.
 2. **No package manager.** `apk-tools` is never installed in the final image, and the apk signing keys and caches are removed.
 3. **No shell** in the distroless variant. The build fails if any dependency pulls in `sh`, `bash`, `busybox` or `apk`, and names the package responsible.
-4. **Non-root by default.** Both images run as UID/GID 65532.
-5. **No setuid or setgid binaries.** These bits are removed from every file.
-6. **The scanners still see everything.** The installed-package list (`/lib/apk/db/installed`) is kept on purpose, so grype, trivy and syft can identify every package. Removing it would hide CVEs, not fix them.
-7. **Empty build context.** `.dockerignore` excludes everything, so no local files can leak into the image.
+4. **Compiler hardening still works without a shell.** Wolfi's `gcc` package routes `gcc`, `cc`, `g++` and related commands through `/usr/local/bin/gcc-wrapper`, which adds the [OpenSSF compiler-hardening](https://best.openssf.org/Compiler-Hardening-Guides/Compiler-Options-Hardening-Guide-for-C-and-C++.html) spec file. Upstream that wrapper is a `/bin/sh` script, so the distroless build replaces it with a compiled C program that does the same thing. The build fails if any compiler command in `/usr/local/bin` is still a script.
+5. **Non-root by default.** Both images run as UID/GID 65532.
+6. **No setuid or setgid binaries.** These bits are removed from every file.
+7. **The scanners still see everything.** The installed-package list (`/lib/apk/db/installed`) is kept on purpose, so grype, trivy and syft can identify every package. Removing it would hide CVEs, not fix them.
+8. **Empty build context.** `.dockerignore` excludes everything, so no local files can leak into the image.
 
 ## CVE gate
 
@@ -193,6 +196,30 @@ Grype uses the Wolfi security database, so it already ignores CVEs that Wolfi ha
 4. **Pin an older minor version** if the newest one has a regression (`GO_PACKAGE=go-1.xx`).
 5. **For a reviewed false positive**, add a [grype ignore rule](https://github.com/anchore/grype#specifying-matches-to-ignore) in `.grype.yaml` with a justification. Don't loosen the limits to make a build pass.
 
+## Continuous integration
+
+`.github/workflows/build-and-scan.yml` builds, smoke-tests and CVE-gates **every variant on every architecture**, four jobs in all:
+
+| | `amd64` (runner `ubuntu-24.04`) | `arm64` (runner `ubuntu-24.04-arm`) |
+|---|---|---|
+| `shell` | ✓ | ✓ |
+| `distroless` | ✓ | ✓ |
+
+Each job builds natively on its own architecture's runner, with no QEMU emulation. It runs `make build-<variant>`, checks that the image's architecture matches the job, then runs `make test-<variant>` and `make scan-<variant>`, with `PLATFORM=linux/<arch>`.
+
+The workflow runs:
+
+- on every pull request
+- on every push to `main`
+- daily at 06:17 UTC, so new CVEs and new Wolfi fixes show up without a code change
+- on demand (**Actions → build-and-scan → Run workflow**)
+
+Builds always use `NO_CACHE=1` so they pick up the latest Wolfi packages. A job fails if the build, the architecture check, the smoke test or the CVE gate fails. Each job writes a table of CVE counts and findings to the run summary and uploads `reports/` as an artifact named `grype-<variant>-<arch>`, kept for 30 days.
+
+The workflow only builds and scans. It doesn't publish images.
+
+To make the gate block merges, add **`build-and-scan (all)`** as a required status check in the branch protection rule for `main`. That one check passes only when all four jobs pass.
+
 ## Smoke tests
 
 `tests/smoke.py` is piped into the container's Python through stdin, so it works without a shell. It checks:
@@ -200,8 +227,9 @@ Grype uses the Wolfi security database, so it already ignores CVEs that Wolfi ha
 - the process runs as UID 65532
 - Python is 3.14.x, and `ssl`, `sqlite3`, `ctypes`, `venv`, `zlib`, `lzma` and `bz2` import
 - `pip` works
+- `gcc` reads the OpenSSF hardening spec file
 - `/bin/sh` exists in the shell variant and is absent in the distroless variant, and `apk` is absent in both
-- Go, cgo and Rust (via `cargo new` and `cargo build --offline`) each compile a program, and the program runs and prints the expected output
+- C (via both `cc` and `gcc`), Go, cgo and Rust (via `cargo new` and `cargo build --offline`) each compile a program, and the program runs and prints the expected output
 
 The tests run with `--network=none`, a read-only root filesystem and all capabilities dropped.
 
@@ -209,6 +237,8 @@ The tests run with `--network=none`, a read-only root filesystem and all capabil
 
 ```
 .
+├── .github/workflows/
+│   └── build-and-scan.yml # CI: build, test, CVE gate
 ├── Dockerfile             # shell variant
 ├── Dockerfile.distroless  # no-shell variant
 ├── Makefile               # build / test / scan / sbom
