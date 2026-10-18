@@ -44,6 +44,22 @@ if expect_shell is not None:
 check("no apk", shutil.which("apk") is None)
 
 with tempfile.TemporaryDirectory() as d:
+    # C via both compiler entry points (Wolfi routes these through gcc-wrapper)
+    with open(os.path.join(d, "hello.c"), "w") as f:
+        f.write('#include <stdio.h>\nint main(void){ puts("c-ok"); return 0; }\n')
+    for compiler in ("cc", "gcc"):
+        exe = os.path.join(d, f"hello-{compiler}")
+        rc, out = run([compiler, "-o", exe, "hello.c"], cwd=d)
+        check(f"{compiler} build", rc == 0, out)
+        if rc == 0:
+            rc, out = run([exe])
+            check(f"{compiler} run", out == "c-ok", out)
+
+    # The OpenSSF hardening spec must still be applied.
+    rc, out = run(["gcc", "-v"])
+    check("gcc uses hardening spec", "openssf.spec" in out or "gcc_spec_file" in out,
+          next((l for l in out.splitlines() if "Reading specs" in l), "no 'Reading specs' line"))
+
     # Go (pure)
     with open(os.path.join(d, "main.go"), "w") as f:
         f.write('package main\nimport "fmt"\nfunc main(){ fmt.Println("go-ok") }\n')

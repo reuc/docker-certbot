@@ -1,0 +1,135 @@
+name: build-and-scan
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # Daily rebuild so new CVEs (and new Wolfi fixes) are caught without a code change.
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-scan:
+    name: build-scan (${{ matrix.variant }}, ${{ matrix.arch }})
+    # Each architecture builds natively; no QEMU emulation.
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [shell, distroless]
+        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    env:
+      TAG: ci-${{ github.run_id }}
+      PLATFORM: linux/${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Install grype
+        id: grype
+        uses: anchore/scan-action/download-grype@v6
+
+      - name: Build
+        # NO_CACHE so every run resolves the latest Wolfi packages.
+        run: make build-${{ matrix.variant }} NO_CACHE=1
+
+      - name: Verify image architecture
+        env:
+          VARIANT: ${{ matrix.variant }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          ref="wolfi-polyglot:${TAG}"
+          [ "$VARIANT" = distroless ] && ref="${ref}-distroless"
+          got=$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$ref")
+          echo "$ref is $got"
+          [ "$got" = "linux/${ARCH}" ]
+
+      - name: Smoke test
+        shell: bash
+        env:
+          VARIANT: ${{ matrix.variant }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set +e
+          make "test-${VARIANT}" 2>&1 | tee smoke.log
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -ne 0 ]; then
+            # Surface failures as annotations so they show on the PR without opening logs.
+            grep -E '^\[FAIL\]' smoke.log | while IFS= read -r line; do
+              echo "::error title=Smoke test ${VARIANT}/${ARCH}::${line}"
+            done
+            tail_out=$(tail -n 40 smoke.log | sed -e 's/%/%25/g' -e 's/\r/%0D/g' | sed ':a;N;$!ba;s/\n/%0A/g')
+            echo "::error title=Smoke test ${VARIANT}/${ARCH} output (last 40 lines)::${tail_out}"
+          fi
+          exit "$rc"
+
+      - name: CVE gate
+        env:
+          GRYPE: ${{ steps.grype.outputs.cmd }}
+        run: make scan-${{ matrix.variant }} GRYPE="$GRYPE"
+
+      - name: Job summary
+        if: always()
+        env:
+          VARIANT: ${{ matrix.variant }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          f="reports/${VARIANT}-grype.json"
+          [ -f "$f" ] || { echo "No grype report for ${VARIANT}/${ARCH}." >> "$GITHUB_STEP_SUMMARY"; exit 0; }
+          {
+            echo "### CVE scan: ${VARIANT} (${ARCH})"
+            echo
+            echo "| Severity | Unique CVEs |"
+            echo "|---|---|"
+            for s in Critical High Medium Low Negligible Unknown; do
+              n=$(jq --arg s "$s" '[.matches[] | select(.vulnerability.severity == $s) | .vulnerability.id] | unique | length' "$f")
+              echo "| $s | $n |"
+            done
+            echo
+            echo "<details><summary>Findings</summary>"
+            echo
+            echo "| Severity | ID | Package | Installed | Fixed in |"
+            echo "|---|---|---|---|---|"
+            jq -r '.matches[] | "| \(.vulnerability.severity) | \(.vulnerability.id) | \(.artifact.name) | \(.artifact.version) | \(.vulnerability.fix.versions | join(", ")) |"' "$f" | sort -u
+            echo
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload grype report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: grype-${{ matrix.variant }}-${{ matrix.arch }}
+          path: reports/
+          if-no-files-found: ignore
+          retention-days: 30
+
+  # Single status check for branch protection: passes only if every
+  # variant/architecture combination built, passed smoke tests and the CVE gate.
+  all-builds:
+    name: build-and-scan (all)
+    if: always()
+    needs: build-scan
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check matrix result
+        env:
+          RESULT: ${{ needs.build-scan.result }}
+        run: |
+          echo "build-scan matrix result: $RESULT"
+          [ "$RESULT" = success ]
