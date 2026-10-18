@@ -60,6 +60,68 @@ RUN set -eux; \
     find /rootfs -xdev -type f -perm /6000 -exec chmod a-s {} +; \
     rm -rf /rootfs/var/cache/apk/* /rootfs/etc/apk/keys /rootfs/root/.cache
 
+# Wolfi's gcc depends on openssf-compiler-options, which routes gcc/cc/g++/...
+# through /usr/local/bin/gcc-wrapper to add the OpenSSF hardening spec. That
+# wrapper is a /bin/sh script, so without a shell cgo and Rust linking break.
+# Replace it with a compiled equivalent that keeps the same behaviour.
+COPY <<'EOF' /tmp/gcc-wrapper.c
+/* Same logic as Wolfi's /usr/local/bin/gcc-wrapper shell script: run
+ * /usr/bin/<basename of argv[0]> with "-specs SPEC" prepended, where SPEC is
+ * $GCC_SPEC_FILE, else /etc/gcc_spec_file if it exists, else openssf.spec.
+ */
+#include <limits.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+int main(int argc, char **argv) {
+    const char *name = strrchr(argv[0], '/');
+    name = name ? name + 1 : argv[0];
+
+    const char *spec = getenv("GCC_SPEC_FILE");
+    if (spec == NULL || *spec == '\0')
+        spec = access("/etc/gcc_spec_file", F_OK) == 0 ? "/etc/gcc_spec_file" : "openssf.spec";
+
+    char path[PATH_MAX];
+    if (snprintf(path, sizeof path, "/usr/bin/%s", name) >= (int)sizeof path) {
+        fprintf(stderr, "gcc-wrapper: name too long\n");
+        return 127;
+    }
+
+    char **args = calloc((size_t)argc + 3, sizeof *args);
+    if (args == NULL) {
+        perror("gcc-wrapper");
+        return 127;
+    }
+    args[0] = path;
+    args[1] = "-specs";
+    args[2] = (char *)spec;
+    for (int i = 1; i < argc; i++)
+        args[i + 2] = argv[i];
+
+    execv(path, args);
+    perror(path);
+    return 127;
+}
+EOF
+
+RUN set -eux; \
+    w=/rootfs/usr/local/bin/gcc-wrapper; \
+    if [ -f "$w" ] && [ "$(head -c2 "$w")" = '#!' ]; then \
+        apk add --no-cache gcc glibc-dev; \
+        gcc -O2 -Wall -Werror -o /tmp/gcc-wrapper /tmp/gcc-wrapper.c; \
+        install -m 0755 /tmp/gcc-wrapper "$w"; \
+    fi; \
+    # Guard: every compiler entry point must be runnable without a shell.
+    for f in /rootfs/usr/local/bin/*; do \
+        t=$(readlink -f "$f"); \
+        if [ -f "$t" ] && [ "$(head -c2 "$t")" = '#!' ]; then \
+            echo "ERROR: $f -> $t is a script and needs an interpreter"; exit 1; \
+        fi; \
+    done; \
+    rm -f /tmp/gcc-wrapper /tmp/gcc-wrapper.c
+
 FROM scratch
 
 COPY --from=builder /rootfs/ /

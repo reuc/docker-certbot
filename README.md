@@ -156,10 +156,11 @@ docker run --rm \
 1. **Only the listed packages get in.** A throwaway `wolfi-base` stage installs them into an empty root folder with `apk add --root … --initdb --no-scripts`. That folder is copied into `FROM scratch`, so nothing else from the builder lands in the final image.
 2. **No package manager.** `apk-tools` is never installed in the final image, and the apk signing keys and caches are removed.
 3. **No shell** in the distroless variant. The build fails if any dependency pulls in `sh`, `bash`, `busybox` or `apk`, and names the package responsible.
-4. **Non-root by default.** Both images run as UID/GID 65532.
-5. **No setuid or setgid binaries.** These bits are removed from every file.
-6. **The scanners still see everything.** The installed-package list (`/lib/apk/db/installed`) is kept on purpose, so grype, trivy and syft can identify every package. Removing it would hide CVEs, not fix them.
-7. **Empty build context.** `.dockerignore` excludes everything, so no local files can leak into the image.
+4. **Compiler hardening still works without a shell.** Wolfi's `gcc` package routes `gcc`, `cc`, `g++` and related commands through `/usr/local/bin/gcc-wrapper`, which adds the [OpenSSF compiler-hardening](https://best.openssf.org/Compiler-Hardening-Guides/Compiler-Options-Hardening-Guide-for-C-and-C++.html) spec file. Upstream that wrapper is a `/bin/sh` script, so the distroless build replaces it with a compiled C program that does the same thing. The build fails if any compiler command in `/usr/local/bin` is still a script.
+5. **Non-root by default.** Both images run as UID/GID 65532.
+6. **No setuid or setgid binaries.** These bits are removed from every file.
+7. **The scanners still see everything.** The installed-package list (`/lib/apk/db/installed`) is kept on purpose, so grype, trivy and syft can identify every package. Removing it would hide CVEs, not fix them.
+8. **Empty build context.** `.dockerignore` excludes everything, so no local files can leak into the image.
 
 ## CVE gate
 
@@ -226,8 +227,9 @@ To make the gate block merges, add **`build-and-scan (all)`** as a required stat
 - the process runs as UID 65532
 - Python is 3.14.x, and `ssl`, `sqlite3`, `ctypes`, `venv`, `zlib`, `lzma` and `bz2` import
 - `pip` works
+- `gcc` reads the OpenSSF hardening spec file
 - `/bin/sh` exists in the shell variant and is absent in the distroless variant, and `apk` is absent in both
-- Go, cgo and Rust (via `cargo new` and `cargo build --offline`) each compile a program, and the program runs and prints the expected output
+- C (via both `cc` and `gcc`), Go, cgo and Rust (via `cargo new` and `cargo build --offline`) each compile a program, and the program runs and prints the expected output
 
 The tests run with `--network=none`, a read-only root filesystem and all capabilities dropped.
 
