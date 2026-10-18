@@ -42,7 +42,7 @@ jobs:
 
       - name: Install grype
         id: grype
-        uses: anchore/scan-action/download-grype@v6
+        uses: anchore/scan-action/download-grype@v7
 
       - name: Build
         # NO_CACHE so every run resolves the latest Wolfi packages.
@@ -112,7 +112,7 @@ jobs:
 
       - name: Upload grype report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: grype-${{ matrix.variant }}-${{ matrix.arch }}
           path: reports/
