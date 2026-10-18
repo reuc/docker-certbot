@@ -197,18 +197,27 @@ Grype uses the Wolfi security database, so it already ignores CVEs that Wolfi ha
 
 ## Continuous integration
 
-`.github/workflows/build-and-scan.yml` runs `make build-<variant>`, `make test-<variant>` and `make scan-<variant>` for both variants as separate jobs. It runs:
+`.github/workflows/build-and-scan.yml` builds, smoke-tests and CVE-gates **every variant on every architecture**, four jobs in all:
+
+| | `amd64` (runner `ubuntu-24.04`) | `arm64` (runner `ubuntu-24.04-arm`) |
+|---|---|---|
+| `shell` | ✓ | ✓ |
+| `distroless` | ✓ | ✓ |
+
+Each job builds natively on its own architecture's runner, with no QEMU emulation. It runs `make build-<variant>`, checks that the image's architecture matches the job, then runs `make test-<variant>` and `make scan-<variant>`, with `PLATFORM=linux/<arch>`.
+
+The workflow runs:
 
 - on every pull request
 - on every push to `main`
 - daily at 06:17 UTC, so new CVEs and new Wolfi fixes show up without a code change
 - on demand (**Actions → build-and-scan → Run workflow**)
 
-Builds always use `NO_CACHE=1` so they pick up the latest Wolfi packages. A job fails if the build, the smoke test or the CVE gate fails. Each job writes a table of CVE counts and findings to the run summary and uploads `reports/` as an artifact (`grype-shell` or `grype-distroless`), kept for 30 days.
+Builds always use `NO_CACHE=1` so they pick up the latest Wolfi packages. A job fails if the build, the architecture check, the smoke test or the CVE gate fails. Each job writes a table of CVE counts and findings to the run summary and uploads `reports/` as an artifact named `grype-<variant>-<arch>`, kept for 30 days.
 
 The workflow only builds and scans. It doesn't publish images.
 
-To make the gate block merges, add both `build-scan (shell)` and `build-scan (distroless)` as required status checks in the branch protection rule for `main`.
+To make the gate block merges, add **`build-and-scan (all)`** as a required status check in the branch protection rule for `main`. That one check passes only when all four jobs pass.
 
 ## Smoke tests
 
