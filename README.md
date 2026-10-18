@@ -1,5 +1,7 @@
 # wolfi-polyglot
 
+[![build-and-scan](https://github.com/reuc/docker-wolfi/actions/workflows/build-and-scan.yml/badge.svg)](https://github.com/reuc/docker-wolfi/actions/workflows/build-and-scan.yml)
+
 Hardened container images built on [Wolfi](https://github.com/wolfi-dev). Each image contains:
 
 - **Python 3.14.x**, with pip and the dev headers
@@ -193,6 +195,21 @@ Grype uses the Wolfi security database, so it already ignores CVEs that Wolfi ha
 4. **Pin an older minor version** if the newest one has a regression (`GO_PACKAGE=go-1.xx`).
 5. **For a reviewed false positive**, add a [grype ignore rule](https://github.com/anchore/grype#specifying-matches-to-ignore) in `.grype.yaml` with a justification. Don't loosen the limits to make a build pass.
 
+## Continuous integration
+
+`.github/workflows/build-and-scan.yml` runs `make build-<variant>`, `make test-<variant>` and `make scan-<variant>` for both variants as separate jobs. It runs:
+
+- on every pull request
+- on every push to `main`
+- daily at 06:17 UTC, so new CVEs and new Wolfi fixes show up without a code change
+- on demand (**Actions → build-and-scan → Run workflow**)
+
+Builds always use `NO_CACHE=1` so they pick up the latest Wolfi packages. A job fails if the build, the smoke test or the CVE gate fails. Each job writes a table of CVE counts and findings to the run summary and uploads `reports/` as an artifact (`grype-shell` or `grype-distroless`), kept for 30 days.
+
+The workflow only builds and scans. It doesn't publish images.
+
+To make the gate block merges, add both `build-scan (shell)` and `build-scan (distroless)` as required status checks in the branch protection rule for `main`.
+
 ## Smoke tests
 
 `tests/smoke.py` is piped into the container's Python through stdin, so it works without a shell. It checks:
@@ -209,6 +226,8 @@ The tests run with `--network=none`, a read-only root filesystem and all capabil
 
 ```
 .
+├── .github/workflows/
+│   └── build-and-scan.yml # CI: build, test, CVE gate
 ├── Dockerfile             # shell variant
 ├── Dockerfile.distroless  # no-shell variant
 ├── Makefile               # build / test / scan / sbom
