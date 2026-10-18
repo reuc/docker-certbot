@@ -60,7 +60,23 @@ jobs:
           [ "$got" = "linux/${ARCH}" ]
 
       - name: Smoke test
-        run: make test-${{ matrix.variant }}
+        shell: bash
+        env:
+          VARIANT: ${{ matrix.variant }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set +e
+          make "test-${VARIANT}" 2>&1 | tee smoke.log
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -ne 0 ]; then
+            # Surface failures as annotations so they show on the PR without opening logs.
+            grep -E '^\[FAIL\]' smoke.log | while IFS= read -r line; do
+              echo "::error title=Smoke test ${VARIANT}/${ARCH}::${line}"
+            done
+            tail_out=$(tail -n 40 smoke.log | sed -e 's/%/%25/g' -e 's/\r/%0D/g' | sed ':a;N;$!ba;s/\n/%0A/g')
+            echo "::error title=Smoke test ${VARIANT}/${ARCH} output (last 40 lines)::${tail_out}"
+          fi
+          exit "$rc"
 
       - name: CVE gate
         env:
