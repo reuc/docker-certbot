@@ -1,2 +1,3 @@
-# Nothing from the build context is needed; keep it empty.
+# Keep the build context minimal: only what a Dockerfile COPYs.
 *
+!certbot/requirements.txt
