@@ -293,6 +293,10 @@ The workflow only builds and scans. It doesn't publish images.
 
 To make the gate block merges, add **`build-and-scan (all)`** as a required status check in the branch protection rule for `main`. That one check passes only when all six jobs pass.
 
+### CodeQL
+
+`.github/workflows/codeql.yml` runs [CodeQL](https://codeql.github.com/) with the `security-and-quality` query suite on the repository's Python (`tests/*.py`) and GitHub Actions workflows. It runs on every pull request, on pushes to `main` and `CertBot`, weekly on Mondays at 05:29 UTC, and on demand. Results appear under **Security → Code scanning** and satisfy the `CertBot` ruleset's code-scanning requirement.
+
 ## Smoke tests
 
 `tests/smoke.py` tests the toolchain images and `tests/smoke_certbot.py` tests the Certbot image.
@@ -322,7 +326,8 @@ The tests run with `--network=none`, a read-only root filesystem and all capabil
 ```
 .
 ├── .github/workflows/
-│   └── build-and-scan.yml # CI: build, test, CVE gate
+│   ├── build-and-scan.yml # CI: build, test, CVE gate
+│   └── codeql.yml         # CodeQL code scanning
 ├── Dockerfile             # shell variant
 ├── Dockerfile.distroless  # no-shell variant
 ├── Dockerfile.certbot     # Certbot + all DNS plugins (distroless)
