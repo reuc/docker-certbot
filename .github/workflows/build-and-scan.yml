@@ -25,7 +25,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [shell, distroless]
+        variant: [shell, distroless, certbot]
         arch: [amd64, arm64]
         include:
           - arch: amd64
@@ -53,8 +53,7 @@ jobs:
           VARIANT: ${{ matrix.variant }}
           ARCH: ${{ matrix.arch }}
         run: |
-          ref="wolfi-polyglot:${TAG}"
-          [ "$VARIANT" = distroless ] && ref="${ref}-distroless"
+          ref=$(make -s "image-ref-${VARIANT}")
           got=$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$ref")
           echo "$ref is $got"
           [ "$got" = "linux/${ARCH}" ]
