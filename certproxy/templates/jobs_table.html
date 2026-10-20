@@ -1,0 +1,19 @@
+{% if jobs.is_empty() %}
+<p class="muted">No jobs.</p>
+{% else %}
+<table>
+  <thead><tr><th>Created</th><th>Kind</th><th>Name</th><th>Status</th><th>Requester</th><th>Error</th></tr></thead>
+  <tbody>
+  {% for j in jobs %}
+  <tr>
+    <td title="job {{ j.id }}">{{ j.created }}</td>
+    <td>{{ j.kind }}</td>
+    <td><a href="/certs/{{ j.name }}">{{ j.name }}</a></td>
+    <td class="status-{{ j.status }}">{{ j.status }}</td>
+    <td>{{ j.requester }}</td>
+    <td><pre class="error-text">{{ j.error }}</pre></td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}

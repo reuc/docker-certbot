@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Enroll · certproxy{% endblock %}
+{% block content %}
+<section class="card narrow">
+  <h1>{% if reset %}Reset your sign-in{% else %}Set up your admin account{% endif %}</h1>
+  <p class="muted">Step 1 of 2: choose your password. Next you'll add certproxy to an authenticator app.</p>
+  {% if let Some(e) = error %}<p class="error">{{ e }}</p>{% endif %}
+  <form method="post" action="/enroll/{{ token }}">
+    {% if let Some(u) = username %}
+    <p>Username: <strong>{{ u }}</strong></p>
+    {% else %}
+    <label>Username (a-z, 0-9, '.', '_', '-') <input name="username" required pattern="[a-z0-9._-]{1,64}" autocomplete="username" autofocus></label>
+    {% endif %}
+    <label>Password (min 12 characters) <input name="password" type="password" autocomplete="new-password" required minlength="12"></label>
+    <label>Confirm password <input name="confirm" type="password" autocomplete="new-password" required minlength="12"></label>
+    <button type="submit">Continue</button>
+  </form>
+</section>
+{% endblock %}

@@ -1,0 +1,90 @@
+# syntax=docker/dockerfile:1
+#
+# Hardened Wolfi image for Certbot with every official DNS plugin.
+# Variant: non-root, NO shell, NO package manager (distroless-style).
+#
+# Python comes from Wolfi. Certbot and its plugins come from PyPI, installed
+# from certbot/requirements.txt: every package pinned to an exact version and
+# verified by SHA-256 (pip --require-hashes), wheels only (no compiling).
+
+ARG BASE_IMAGE=cgr.dev/chainguard/wolfi-base:latest
+
+FROM ${BASE_IMAGE} AS builder
+
+ARG PYTHON_VERSION=3.14
+ARG APK_CACHE_BUST=0
+
+COPY certbot/requirements.txt /tmp/requirements.txt
+
+RUN set -eux; \
+    echo "cache-bust: ${APK_CACHE_BUST}"; \
+    # Python + pip in the builder, only to populate the venv.
+    apk add --no-cache "python-${PYTHON_VERSION}" "py${PYTHON_VERSION}-pip"; \
+    mkdir -p /rootfs; \
+    apk add --no-cache --no-scripts --initdb --root /rootfs \
+        --keys-dir /etc/apk/keys \
+        --repositories-file /etc/apk/repositories \
+        wolfi-baselayout \
+        ca-certificates-bundle \
+        glibc \
+        glibc-locale-posix \
+        tzdata \
+        "python-${PYTHON_VERSION}"; \
+    # The venv is built with the builder's Python but runs on the rootfs one,
+    # so they must be the same build.
+    py="/usr/bin/python${PYTHON_VERSION}"; \
+    "$py" --version | grep -Eq "^Python ${PYTHON_VERSION}\.[0-9]+$"; \
+    [ "$("$py" --version)" = "$(chroot /rootfs "$py" --version)" ]; \
+    # Build the venv at its final path so script shebangs are correct, and
+    # without pip so the final image has no package installer.
+    "$py" -m venv --without-pip /opt/certbot; \
+    "$py" -m pip --python /opt/certbot/bin/python install \
+        --no-cache-dir \
+        --require-hashes \
+        --only-binary=:all: \
+        --no-deps \
+        -r /tmp/requirements.txt; \
+    "$py" -m pip --python /opt/certbot/bin/python check; \
+    /opt/certbot/bin/certbot --version; \
+    rm -f /opt/certbot/bin/activate* /opt/certbot/bin/Activate.ps1; \
+    mkdir -p /rootfs/opt; \
+    cp -a /opt/certbot /rootfs/opt/certbot; \
+    # Guard: no shell or package manager may sneak in.
+    for f in /bin/sh /bin/bash /bin/ash /bin/busybox /usr/bin/busybox /sbin/apk /usr/bin/apk /opt/certbot/bin/pip; do \
+        if [ -e "/rootfs$f" ] || [ -L "/rootfs$f" ]; then \
+            echo "ERROR: $f present in rootfs"; exit 1; \
+        fi; \
+    done; \
+    grep -q '^nonroot:' /rootfs/etc/passwd || \
+        echo 'nonroot:x:65532:65532:nonroot:/home/nonroot:/sbin/nologin' >> /rootfs/etc/passwd; \
+    grep -q '^nonroot:' /rootfs/etc/group || \
+        echo 'nonroot:x:65532:' >> /rootfs/etc/group; \
+    # Certbot's default config, work and log directories, writable by nonroot.
+    mkdir -p /rootfs/home/nonroot /rootfs/tmp \
+        /rootfs/etc/letsencrypt /rootfs/var/lib/letsencrypt /rootfs/var/log/letsencrypt; \
+    chown -R 65532:65532 /rootfs/home/nonroot \
+        /rootfs/etc/letsencrypt /rootfs/var/lib/letsencrypt /rootfs/var/log/letsencrypt; \
+    chmod 0750 /rootfs/home/nonroot /rootfs/etc/letsencrypt /rootfs/var/lib/letsencrypt /rootfs/var/log/letsencrypt; \
+    chmod 1777 /rootfs/tmp; \
+    find /rootfs -xdev -type f -perm /6000 -exec chmod a-s {} +; \
+    rm -rf /rootfs/var/cache/apk/* /rootfs/etc/apk/keys /rootfs/root/.cache
+
+FROM scratch
+
+COPY --from=builder /rootfs/ /
+
+# REQUESTS_CA_BUNDLE makes requests use Wolfi's CA bundle (refreshed on every
+# rebuild) instead of the one pinned in the certifi package.
+ENV PATH=/opt/certbot/bin:/usr/bin:/bin \
+    HOME=/home/nonroot \
+    LANG=C.UTF-8 \
+    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+    REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+USER 65532:65532
+WORKDIR /home/nonroot
+
+ENTRYPOINT ["/opt/certbot/bin/certbot"]
+CMD ["--help"]

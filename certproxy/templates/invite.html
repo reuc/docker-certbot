@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Enrollment link · certproxy{% endblock %}
+{% block content %}
+<h1>{% if purpose == "reset" %}Re-enrollment{% else %}Enrollment{% endif %} link for {{ username }}</h1>
+<p class="warn">Shown only once. Send it to {{ username }} over a trusted channel. It works once and expires at {{ expires }}.</p>
+<dl class="card">
+  <dt>Link</dt><dd><code class="wrap">{{ link }}</code></dd>
+</dl>
+<p class="muted">
+  {{ username }} will choose their own password and set up their own authenticator; you won't see either.
+  {% if purpose == "reset" %}Their current password and authenticator keep working until they finish; then all their sessions are signed out.{% endif %}
+</p>
+<p><a href="/admins">Back to admins</a></p>
+{% endblock %}

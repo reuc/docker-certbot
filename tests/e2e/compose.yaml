@@ -1,0 +1,55 @@
+# End-to-end test environment: Vault dev server, Pebble (Let's Encrypt's test
+# CA) and the certproxy image under test. Driven by tests/e2e/run.sh.
+name: certproxy-e2e
+
+services:
+  vault:
+    image: hashicorp/vault:2.1.2
+    command: ["server", "-dev", "-dev-root-token-id=root", "-dev-listen-address=0.0.0.0:8200"]
+    environment:
+      SKIP_SETCAP: "true"
+    ports:
+      - "127.0.0.1:8200:8200"
+
+  pebble:
+    image: ghcr.io/letsencrypt/pebble:2.10.1
+    command: ["-config", "/test/config/pebble-config.json"]
+    environment:
+      PEBBLE_VA_ALWAYS_VALID: "1"
+      PEBBLE_VA_NOSLEEP: "1"
+      PEBBLE_WFE_NONCEREJECT: "0"
+
+  certproxy:
+    image: ${CERTPROXY_IMAGE:?set CERTPROXY_IMAGE}
+    depends_on: [vault, pebble]
+    environment:
+      TLS_MODE: none
+      LISTEN_ADDR: 0.0.0.0:8080
+      # Enrollment links are opened from the test runner via the port mapping.
+      PUBLIC_URL: http://127.0.0.1:8080
+      VAULT_ADDR: http://vault:8200
+      VAULT_AUTH: approle
+      VAULT_ROLE_ID_FILE: /creds/vault_role_id
+      VAULT_SECRET_ID_FILE: /creds/vault_secret_id
+      ACME_SERVER: https://pebble:14000/dir
+      ACME_CA_BUNDLE: /creds/pebble-ca.pem
+      ACME_DNS_PROVIDER: dns_noop
+      ACME_DNS_SLEEP: "1"
+      ACME_HOOKS_DIR: /hooks
+      ACME_EMAIL: e2e@example.com
+      RATE_LIMIT_PER_HOUR: "50"
+    volumes:
+      - ${E2E_CREDS:?set E2E_CREDS}:/creds:ro
+      - ./hooks:/hooks:ro
+      - e2e-data:/data
+    ports:
+      - "127.0.0.1:8080:8080"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  e2e-data:
