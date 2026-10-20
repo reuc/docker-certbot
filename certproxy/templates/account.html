@@ -2,7 +2,7 @@
 {% block title %}Account · certproxy{% endblock %}
 {% block content %}
 <h1>Account</h1>
-<p class="muted">Unused recovery codes: {{ recovery_left }}. Use "Reset TOTP" on the Admins page to issue new ones.</p>
+<p class="muted">Unused recovery codes: {{ recovery_left }}. To get new ones (or a new authenticator), use "Re-enrollment link" on the Admins page.</p>
 <section class="card narrow">
   <h2>Change password</h2>
   {% if let Some(e) = error %}<p class="error">{{ e }}</p>{% endif %}

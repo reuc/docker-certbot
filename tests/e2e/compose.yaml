@@ -25,6 +25,8 @@ services:
     environment:
       TLS_MODE: none
       LISTEN_ADDR: 0.0.0.0:8080
+      # Enrollment links are opened from the test runner via the port mapping.
+      PUBLIC_URL: http://127.0.0.1:8080
       VAULT_ADDR: http://vault:8200
       VAULT_AUTH: approle
       VAULT_ROLE_ID_FILE: /creds/vault_role_id

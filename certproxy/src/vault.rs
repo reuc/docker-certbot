@@ -392,6 +392,16 @@ impl VaultClient {
             .unwrap_or(0))
     }
 
+    /// Delete a KV v2 secret and all of its versions (metadata delete).
+    pub async fn kv_delete(&self, path: &str) -> Result<(), VaultError> {
+        let token = self.token().await?;
+        let api = format!("{}/metadata/{}", self.kv_mount, path);
+        match self.send(Method::DELETE, &api, Some(&token), None).await {
+            Ok(_) | Err(VaultError::NotFound) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Read a KV v2 secret whose fields are all strings.
     pub async fn kv_get_strings(&self, path: &str) -> Result<HashMap<String, String>> {
         let secret = self

@@ -89,6 +89,15 @@ impl AppState {
         )
     }
 
+    /// Enrollment link for a token, absolute when a base URL is known.
+    pub fn enroll_link(&self, token: &str) -> String {
+        format!("{}/enroll/{token}", self.cfg.base_url().unwrap_or_default())
+    }
+
+    pub fn invite_ttl_secs(&self) -> i64 {
+        self.cfg.invite_ttl.as_secs() as i64
+    }
+
     pub fn renew_before_secs(&self) -> i64 {
         self.cfg.renew_before_days * 86_400
     }
@@ -168,6 +177,9 @@ pub mod tests {
             kv_certs_prefix: "certs".into(),
             kv_dns_path: "certproxy/dns".into(),
             kv_app_path: "certproxy/app".into(),
+            kv_bootstrap_path: "certproxy/bootstrap".into(),
+            public_url: None,
+            invite_ttl: Duration::from_secs(1800),
             request_marker_prefix: "cert-requests".into(),
             acme_sh: "/bin/false".into(),
             acme_server: "letsencrypt_test".into(),

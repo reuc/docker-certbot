@@ -13,9 +13,9 @@
     <td>{% if a.locked %}<span class="bad">locked</span>{% else %}active{% endif %}</td>
     <td class="actions">
       {% if let Some(n) = nav %}
-      <form method="post" action="/admins/{{ a.id }}/reset-totp" class="inline">
+      <form method="post" action="/admins/{{ a.id }}/reenroll" class="inline">
         <input type="hidden" name="csrf" value="{{ n.csrf }}">
-        <button type="submit" class="secondary">Reset TOTP</button>
+        <button type="submit" class="secondary">Re-enrollment link</button>
       </form>
       {% if !a.is_self %}
       <form method="post" action="/admins/{{ a.id }}/delete" class="inline">
@@ -30,12 +30,12 @@
   </tbody>
 </table>
 <section class="card narrow">
-  <h2>Add an admin</h2>
+  <h2>Invite an admin</h2>
+  <p class="muted">Creates a one-time enrollment link. The new admin chooses their own password and sets up their own authenticator.</p>
   <form method="post" action="/admins">
     {% if let Some(n) = nav %}<input type="hidden" name="csrf" value="{{ n.csrf }}">{% endif %}
     <label>Username <input name="username" required pattern="[a-z0-9._-]{1,64}"></label>
-    <label>Initial password (min 12 characters) <input name="password" type="password" autocomplete="new-password" required minlength="12"></label>
-    <button type="submit">Create</button>
+    <button type="submit">Create link</button>
   </form>
 </section>
 {% endblock %}

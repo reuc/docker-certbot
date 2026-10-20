@@ -19,7 +19,8 @@ pub fn renewal_due(not_before: i64, not_after: i64, now: i64, renew_before_secs:
     not_after - window <= now
 }
 
-const MIGRATIONS: &[&str] = &[r#"
+const MIGRATIONS: &[&str] = &[
+    r#"
 CREATE TABLE admins (
     id              INTEGER PRIMARY KEY,
     username        TEXT NOT NULL UNIQUE,
@@ -84,7 +85,30 @@ CREATE TABLE audit (
     detail     TEXT
 );
 CREATE INDEX audit_ts ON audit(ts);
-"#];
+"#,
+    r#"
+-- One-time enrollment links. Only a SHA-256 of the token is stored.
+CREATE TABLE invites (
+    token_hash            TEXT PRIMARY KEY,
+    purpose               TEXT NOT NULL CHECK (purpose IN ('bootstrap', 'create', 'reset')),
+    delivery              TEXT NOT NULL CHECK (delivery IN ('vault', 'ui')),
+    username              TEXT,
+    admin_id              INTEGER REFERENCES admins(id) ON DELETE CASCADE,
+    pending_username      TEXT,
+    pending_password_hash TEXT,
+    pending_totp_enc      BLOB,
+    failed_attempts       INTEGER NOT NULL DEFAULT 0,
+    created_by            TEXT NOT NULL,
+    created_at            INTEGER NOT NULL,
+    expires_at            INTEGER NOT NULL,
+    used_at               INTEGER
+);
+"#,
+];
+
+/// Wrong TOTP codes allowed while confirming an enrollment before the
+/// invite is invalidated.
+pub const INVITE_MAX_FAILURES: i64 = 5;
 
 #[derive(Clone, Debug)]
 pub struct Admin {
@@ -104,6 +128,21 @@ pub struct Session {
     pub admin_id: i64,
     pub csrf: String,
     pub stage: String,
+    pub expires_at: i64,
+}
+
+#[derive(Clone, Debug)]
+pub struct Invite {
+    pub token_hash: String,
+    pub purpose: String,
+    pub delivery: String,
+    /// Fixed username for `create`/`reset`; `None` for `bootstrap`.
+    pub username: Option<String>,
+    pub admin_id: Option<i64>,
+    pub pending_username: Option<String>,
+    pub pending_password_hash: Option<String>,
+    pub pending_totp_enc: Option<Vec<u8>>,
+    pub failed_attempts: i64,
     pub expires_at: i64,
 }
 
@@ -173,6 +212,24 @@ fn admin_from(r: &Row) -> rusqlite::Result<Admin> {
 
 const ADMIN_COLS: &str = "id, username, password_hash, totp_secret_enc, totp_last_step, \
                           failed_attempts, locked_until, created_at, last_login";
+
+fn invite_from(r: &Row) -> rusqlite::Result<Invite> {
+    Ok(Invite {
+        token_hash: r.get(0)?,
+        purpose: r.get(1)?,
+        delivery: r.get(2)?,
+        username: r.get(3)?,
+        admin_id: r.get(4)?,
+        pending_username: r.get(5)?,
+        pending_password_hash: r.get(6)?,
+        pending_totp_enc: r.get(7)?,
+        failed_attempts: r.get(8)?,
+        expires_at: r.get(9)?,
+    })
+}
+
+const INVITE_COLS: &str = "token_hash, purpose, delivery, username, admin_id, pending_username, \
+                           pending_password_hash, pending_totp_enc, failed_attempts, expires_at";
 
 fn job_from(r: &Row) -> rusqlite::Result<Job> {
     Ok(Job {
@@ -644,6 +701,183 @@ impl Db {
         })
     }
 
+    // ---- invites ---------------------------------------------------------
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_invite(
+        &self,
+        token_hash: &str,
+        purpose: &str,
+        delivery: &str,
+        username: Option<&str>,
+        admin_id: Option<i64>,
+        created_by: &str,
+        expires_at: i64,
+    ) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "INSERT INTO invites (token_hash, purpose, delivery, username, admin_id,
+                    created_by, created_at, expires_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    token_hash,
+                    purpose,
+                    delivery,
+                    username,
+                    admin_id,
+                    created_by,
+                    now(),
+                    expires_at
+                ],
+            )
+            .map(|_| ())
+        })
+    }
+
+    /// An unused, unexpired invite that hasn't hit the failure limit.
+    pub fn valid_invite(&self, token_hash: &str) -> Result<Option<Invite>> {
+        self.with(|c| {
+            c.query_row(
+                &format!(
+                    "SELECT {INVITE_COLS} FROM invites
+                     WHERE token_hash = ?1 AND used_at IS NULL AND expires_at > ?2
+                       AND failed_attempts < ?3"
+                ),
+                params![token_hash, now(), INVITE_MAX_FAILURES],
+                invite_from,
+            )
+            .optional()
+        })
+    }
+
+    /// Invalidate open invites: all for `username` (when `Some`), or every
+    /// open invite with the given delivery (when `username` is `None`).
+    pub fn revoke_invites(&self, username: Option<&str>, delivery: &str) -> Result<()> {
+        self.with(|c| {
+            match username {
+                Some(u) => c.execute(
+                    "UPDATE invites SET used_at = ?2
+                     WHERE used_at IS NULL AND (username = ?1 OR pending_username = ?1)",
+                    params![u, now()],
+                ),
+                None => c.execute(
+                    "UPDATE invites SET used_at = ?2 WHERE used_at IS NULL AND delivery = ?1",
+                    params![delivery, now()],
+                ),
+            }
+            .map(|_| ())
+        })
+    }
+
+    /// Expiry of the open bootstrap invite, if one exists.
+    pub fn open_bootstrap_invite(&self) -> Result<Option<i64>> {
+        self.with(|c| {
+            c.query_row(
+                "SELECT expires_at FROM invites
+                 WHERE purpose = 'bootstrap' AND used_at IS NULL AND expires_at > ?1
+                   AND failed_attempts < ?2
+                 ORDER BY expires_at DESC LIMIT 1",
+                params![now(), INVITE_MAX_FAILURES],
+                |r| r.get(0),
+            )
+            .optional()
+        })
+    }
+
+    pub fn set_invite_pending(
+        &self,
+        token_hash: &str,
+        username: &str,
+        password_hash: &str,
+        totp_enc: &[u8],
+    ) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE invites SET pending_username = ?2, pending_password_hash = ?3,
+                    pending_totp_enc = ?4
+                 WHERE token_hash = ?1 AND used_at IS NULL",
+                params![token_hash, username, password_hash, totp_enc],
+            )
+            .map(|_| ())
+        })
+    }
+
+    /// Count a wrong confirmation code; returns the attempts left.
+    pub fn invite_failure(&self, token_hash: &str) -> Result<i64> {
+        self.with(|c| {
+            c.execute(
+                "UPDATE invites SET failed_attempts = failed_attempts + 1 WHERE token_hash = ?1",
+                [token_hash],
+            )?;
+            c.query_row(
+                "SELECT failed_attempts FROM invites WHERE token_hash = ?1",
+                [token_hash],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|n| (INVITE_MAX_FAILURES - n).max(0))
+        })
+    }
+
+    /// Finish an enrollment atomically: create the admin (or, for `reset`,
+    /// replace their password and TOTP secret and sign them out), store the
+    /// recovery-code hashes, record the confirmation step so the code can't
+    /// be replayed, and consume the invite. Returns the admin id.
+    pub fn complete_enrollment(
+        &self,
+        invite: &Invite,
+        recovery_hashes: &[String],
+        totp_step: i64,
+    ) -> Result<i64> {
+        let (Some(username), Some(password_hash), Some(totp_enc)) = (
+            invite.pending_username.as_deref(),
+            invite.pending_password_hash.as_deref(),
+            invite.pending_totp_enc.as_deref(),
+        ) else {
+            anyhow::bail!("enrollment not started");
+        };
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|_| anyhow::anyhow!("database lock poisoned"))?;
+        let tx = conn.transaction()?;
+        let consumed = tx.execute(
+            "UPDATE invites SET used_at = ?2 WHERE token_hash = ?1 AND used_at IS NULL AND expires_at > ?2",
+            params![invite.token_hash, now()],
+        )?;
+        if consumed != 1 {
+            anyhow::bail!("invite already used or expired");
+        }
+        let admin_id = match (invite.purpose.as_str(), invite.admin_id) {
+            ("reset", Some(id)) => {
+                tx.execute(
+                    "UPDATE admins SET password_hash = ?2, totp_secret_enc = ?3, totp_last_step = ?4,
+                        failed_attempts = 0, locked_until = 0
+                     WHERE id = ?1",
+                    params![id, password_hash, totp_enc, totp_step],
+                )?;
+                tx.execute("DELETE FROM sessions WHERE admin_id = ?1", [id])?;
+                id
+            }
+            _ => {
+                tx.execute(
+                    "INSERT INTO admins (username, password_hash, totp_secret_enc, totp_last_step, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![username, password_hash, totp_enc, totp_step, now()],
+                )?;
+                tx.last_insert_rowid()
+            }
+        };
+        tx.execute("DELETE FROM recovery_codes WHERE admin_id = ?1", [admin_id])?;
+        for h in recovery_hashes {
+            tx.execute(
+                "INSERT INTO recovery_codes (admin_id, code_hash) VALUES (?1, ?2)",
+                params![admin_id, h],
+            )?;
+        }
+        tx.commit()?;
+        Ok(admin_id)
+    }
+
     // ---- audit -----------------------------------------------------------
 
     #[allow(clippy::too_many_arguments)]
@@ -791,10 +1025,111 @@ mod tests {
         assert!(renewal_due(0, 6 * day, 4 * day, 30 * day));
     }
 
+    /// Random placeholder values: tests never use literal credentials.
+    fn placeholder_admin(db: &Db, username: &str) -> i64 {
+        let hash = crate::security::random_token();
+        let enc = crate::security::random_bytes::<32>();
+        db.create_admin(username, &hash, &enc).unwrap()
+    }
+
+    fn invite(db: &Db, purpose: &str, username: Option<&str>, admin_id: Option<i64>) -> Invite {
+        let token_hash = crate::security::random_token();
+        db.create_invite(
+            &token_hash,
+            purpose,
+            "ui",
+            username,
+            admin_id,
+            "test",
+            now() + 600,
+        )
+        .unwrap();
+        db.valid_invite(&token_hash).unwrap().unwrap()
+    }
+
+    #[test]
+    fn invites_single_use_and_attempt_limit() {
+        let db = Db::in_memory().unwrap();
+        let inv = invite(&db, "bootstrap", None, None);
+        assert_eq!(db.open_bootstrap_invite().unwrap(), Some(inv.expires_at));
+        // Not started yet: can't complete.
+        assert!(db.complete_enrollment(&inv, &[], 1).is_err());
+
+        let (hash, enc) = (
+            crate::security::random_token(),
+            crate::security::random_bytes::<32>(),
+        );
+        db.set_invite_pending(&inv.token_hash, "alice", &hash, &enc)
+            .unwrap();
+        let inv = db.valid_invite(&inv.token_hash).unwrap().unwrap();
+        let codes = vec![crate::security::random_token()];
+        let id = db.complete_enrollment(&inv, &codes, 42).unwrap();
+        let admin = db.admin(id).unwrap().unwrap();
+        assert_eq!(
+            (admin.username.as_str(), admin.totp_last_step),
+            ("alice", 42)
+        );
+        assert_eq!(db.unused_recovery_codes(id).unwrap(), 1);
+        assert!(
+            db.valid_invite(&inv.token_hash).unwrap().is_none(),
+            "single use"
+        );
+        assert!(
+            db.complete_enrollment(&inv, &codes, 43).is_err(),
+            "no reuse"
+        );
+        assert_eq!(db.open_bootstrap_invite().unwrap(), None);
+
+        let inv2 = invite(&db, "create", Some("bob"), None);
+        for left in (0..INVITE_MAX_FAILURES).rev() {
+            assert_eq!(db.invite_failure(&inv2.token_hash).unwrap(), left);
+        }
+        assert!(
+            db.valid_invite(&inv2.token_hash).unwrap().is_none(),
+            "locked after failures"
+        );
+
+        let inv3 = invite(&db, "create", Some("carol"), None);
+        db.revoke_invites(Some("carol"), "ui").unwrap();
+        assert!(
+            db.valid_invite(&inv3.token_hash).unwrap().is_none(),
+            "revoked"
+        );
+    }
+
+    #[test]
+    fn reset_enrollment_replaces_credentials_and_signs_out() {
+        let db = Db::in_memory().unwrap();
+        let id = placeholder_admin(&db, "alice");
+        db.create_session(
+            &crate::security::random_token(),
+            id,
+            &crate::security::random_token(),
+            "full",
+            now() + 60,
+            None,
+        )
+        .unwrap();
+        db.record_login_failure(id, 1, 900).unwrap();
+        let inv = invite(&db, "reset", Some("alice"), Some(id));
+        let (hash, enc) = (
+            crate::security::random_token(),
+            crate::security::random_bytes::<32>(),
+        );
+        db.set_invite_pending(&inv.token_hash, "alice", &hash, &enc)
+            .unwrap();
+        let inv = db.valid_invite(&inv.token_hash).unwrap().unwrap();
+        assert_eq!(db.complete_enrollment(&inv, &[], 7).unwrap(), id);
+        let admin = db.admin(id).unwrap().unwrap();
+        assert_eq!(admin.password_hash, hash);
+        assert_eq!(admin.locked_until, 0, "reset also unlocks");
+        assert_eq!(db.admin_count().unwrap(), 1);
+    }
+
     #[test]
     fn lockout_and_totp_replay() {
         let db = Db::in_memory().unwrap();
-        let id = db.create_admin("alice", "hash", b"enc").unwrap();
+        let id = placeholder_admin(&db, "alice");
         for _ in 0..4 {
             db.record_login_failure(id, 5, 900).unwrap();
         }
@@ -816,11 +1151,14 @@ mod tests {
     #[test]
     fn recovery_codes_single_use() {
         let db = Db::in_memory().unwrap();
-        let id = db.create_admin("bob", "hash", b"enc").unwrap();
-        db.replace_recovery_codes(id, &["h1".into(), "h2".into()])
-            .unwrap();
-        assert!(db.use_recovery_code(id, "h1").unwrap());
-        assert!(!db.use_recovery_code(id, "h1").unwrap());
+        let id = placeholder_admin(&db, "bob");
+        let (h1, h2) = (
+            crate::security::random_token(),
+            crate::security::random_token(),
+        );
+        db.replace_recovery_codes(id, &[h1.clone(), h2]).unwrap();
+        assert!(db.use_recovery_code(id, &h1).unwrap());
+        assert!(!db.use_recovery_code(id, &h1).unwrap());
         assert_eq!(db.unused_recovery_codes(id).unwrap(), 1);
     }
 }

@@ -12,7 +12,7 @@ use crate::{
     acme::storage_name,
     config::TlsMode,
     db::{CertRecord, now, renewal_due},
-    security::parse_totp_key,
+    security::{self, parse_totp_key},
     state::{RequestOutcome, Shared},
 };
 
@@ -210,7 +210,8 @@ pub async fn run_renewals(state: Shared) {
     }
 }
 
-/// Load certproxy's own secrets from Vault, retrying until it works.
+/// Load certproxy's own secrets from Vault, retrying until it works, then
+/// run the first-launch bootstrap until the first admin has enrolled.
 pub async fn load_app_secrets(state: Shared) {
     loop {
         if state.vault.is_logged_in().await {
@@ -219,7 +220,7 @@ pub async fn load_app_secrets(state: Shared) {
                     Some(Ok(key)) => {
                         state.set_totp_key(key);
                         tracing::info!("loaded certproxy secrets from Vault");
-                        return;
+                        break;
                     }
                     Some(Err(e)) => tracing::error!(error = %e, "invalid totp_key in Vault"),
                     None => {
@@ -231,4 +232,80 @@ pub async fn load_app_secrets(state: Shared) {
         }
         tokio::time::sleep(Duration::from_secs(10)).await;
     }
+    loop {
+        match ensure_bootstrap(&state).await {
+            Ok(true) => return,
+            Ok(false) => {}
+            Err(e) => tracing::error!(error = %format!("{e:#}"), "first-launch bootstrap"),
+        }
+        tokio::time::sleep(Duration::from_secs(60)).await;
+    }
+}
+
+/// Write a one-time enrollment link to Vault for an operator to pick up.
+///
+/// Used on first launch and by `certproxy admin invite`. The link is never
+/// printed or logged: only people allowed to read this Vault path (see
+/// `deploy/vault/bootstrap-reader-policy.example.hcl`) can use it. certproxy
+/// deletes the entry as soon as the enrollment completes.
+pub async fn deliver_via_vault(state: &Shared, token: &str, expires_at: i64) -> Result<()> {
+    let expires = time::OffsetDateTime::from_unix_timestamp(expires_at)?.format(&Rfc3339)?;
+    let note = match state.cfg.base_url() {
+        Some(_) => "Open enrollment_url in a browser before expires_at. It works once.".to_string(),
+        None => "Append enrollment_url to certproxy's address (set PUBLIC_URL to get a full URL). \
+                 It works once, before expires_at."
+            .to_string(),
+    };
+    let data = json!({
+        "enrollment_url": state.enroll_link(token),
+        "expires_at": expires,
+        "note": note,
+    });
+    state
+        .vault
+        .kv_put(&state.cfg.kv_bootstrap_path, &data)
+        .await
+        .map_err(|e| anyhow!("writing enrollment link to Vault: {e}"))?;
+    Ok(())
+}
+
+/// First launch: while no admin exists, keep exactly one valid bootstrap
+/// enrollment link in Vault (replacing it when it expires unused). Returns
+/// `true` once an admin exists and bootstrapping is over.
+pub async fn ensure_bootstrap(state: &Shared) -> Result<bool> {
+    if state.db.admin_count()? > 0 {
+        return Ok(true);
+    }
+    if state.db.open_bootstrap_invite()?.is_some() {
+        return Ok(false);
+    }
+    let (token, expires_at) = security::new_invite(
+        &state.db,
+        "bootstrap",
+        None,
+        "vault",
+        "system:first-launch",
+        state.invite_ttl_secs(),
+    )?;
+    if let Err(e) = deliver_via_vault(state, &token, expires_at).await {
+        state.db.revoke_invites(None, "vault")?;
+        return Err(e);
+    }
+    let path = format!("{}/{}", state.cfg.kv_mount, state.cfg.kv_bootstrap_path);
+    state.db.audit(
+        "system",
+        "certproxy",
+        "bootstrap-invite",
+        &path,
+        "success",
+        None,
+        None,
+    );
+    tracing::warn!(
+        vault_path = %path,
+        expires_at,
+        "no admin exists yet: a one-time enrollment link was written to Vault. \
+         Read it with `vault kv get -field=enrollment_url {path}` and open it in a browser"
+    );
+    Ok(false)
 }

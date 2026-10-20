@@ -15,6 +15,10 @@ finish() {
     echo "---- certproxy logs ----"
     dc logs --no-color --tail 100 certproxy || true
   fi
+  # The enrollment token must never appear in certproxy's output.
+  if [ -n "${LINK_CHECK:-}" ] && dc logs --no-color certproxy 2>/dev/null | grep -q "/enroll/"; then
+    echo "[FAIL] an enrollment link appeared in certproxy's logs"; rc=1
+  fi
   dc down -v --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$E2E_CREDS"
   exit "$rc"
@@ -33,9 +37,11 @@ dc cp pebble:/test/certs/pebble.minica.pem "$E2E_CREDS/pebble-ca.pem"
 chmod 0755 "$E2E_CREDS" && chmod 0644 "$E2E_CREDS"/*
 
 dc up -d certproxy
+LINK_CHECK=1
 
 VAULT_ADDR=http://127.0.0.1:8200 \
 CERTPROXY_URL=http://127.0.0.1:8080 \
 CREDS_DIR="$E2E_CREDS" \
+VAULT_ADMIN_TOKEN=root \
 ADMIN_CMD="docker compose -f $HERE/compose.yaml exec -T certproxy certproxy admin" \
   "$HERE/test.sh"

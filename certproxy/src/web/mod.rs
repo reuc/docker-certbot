@@ -42,8 +42,10 @@ pub fn router() -> Router<Shared> {
         .route("/jobs", get(jobs_page))
         .route("/audit", get(audit_page))
         .route("/admins", get(admins_page).post(admins_create))
-        .route("/admins/{id}/reset-totp", post(admins_reset_totp))
+        .route("/admins/{id}/reenroll", post(admins_reenroll))
         .route("/admins/{id}/delete", post(admins_delete))
+        .route("/enroll/{token}", get(enroll_page).post(enroll_submit))
+        .route("/enroll/{token}/confirm", post(enroll_confirm))
         .route("/account", get(account_page))
         .route("/account/password", post(account_password))
         .route(
@@ -334,15 +336,47 @@ struct AdminsTpl {
     error: Option<String>,
 }
 
+/// Shown once to the admin who created an invite, so they can pass the
+/// link on (out of band) to the person it is for.
 #[derive(Template)]
-#[template(path = "enrollment.html")]
-struct EnrollmentTpl {
+#[template(path = "invite.html")]
+struct InviteTpl {
     nav: Option<Nav>,
     username: String,
-    otpauth_url: String,
+    purpose: String,
+    link: String,
+    expires: String,
+}
+
+#[derive(Template)]
+#[template(path = "enroll.html")]
+struct EnrollTpl {
+    nav: Option<Nav>,
+    token: String,
+    /// Fixed username (named invites); `None` lets the person choose one.
+    username: Option<String>,
+    reset: bool,
+    error: Option<String>,
+}
+
+#[derive(Template)]
+#[template(path = "enroll_totp.html")]
+struct EnrollTotpTpl {
+    nav: Option<Nav>,
+    token: String,
+    username: String,
+    qr_svg: String,
     secret: String,
+    otpauth_url: String,
+    error: Option<String>,
+}
+
+#[derive(Template)]
+#[template(path = "enroll_done.html")]
+struct EnrollDoneTpl {
+    nav: Option<Nav>,
+    username: String,
     codes: Vec<String>,
-    signed_out: bool,
 }
 
 #[derive(Template)]
@@ -751,51 +785,73 @@ async fn admins_page(State(state): State<Shared>, ctx: AdminCtx) -> Response {
 }
 
 #[derive(Deserialize)]
-struct CreateAdminForm {
+struct InviteForm {
     csrf: String,
     username: String,
-    password: String,
+}
+
+/// Create a one-time enrollment link for a new or existing admin and show it
+/// to the inviting admin. The inviter never sees the other person's password,
+/// TOTP seed or recovery codes: those exist only in the invitee's browser.
+async fn issue_invite(
+    state: &Shared,
+    ctx: &AdminCtx,
+    ip: &str,
+    purpose: &str,
+    username: &str,
+) -> Response {
+    let action = if purpose == "reset" {
+        "admin-reenroll-invite"
+    } else {
+        "admin-invite"
+    };
+    match security::new_invite(
+        &state.db,
+        purpose,
+        Some(username),
+        "ui",
+        &ctx.actor(),
+        state.invite_ttl_secs(),
+    ) {
+        Ok((token, expires_at)) => {
+            state.db.audit(
+                "admin",
+                &ctx.admin.username,
+                action,
+                username,
+                "success",
+                Some(ip),
+                None,
+            );
+            render(&InviteTpl {
+                nav: ctx.nav(),
+                username: username.to_string(),
+                purpose: purpose.to_string(),
+                link: state.enroll_link(&token),
+                expires: fmt_ts(expires_at),
+            })
+        }
+        Err(e) => admins_tpl(state, ctx, Some(e.to_string())),
+    }
 }
 
 async fn admins_create(
     State(state): State<Shared>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     ctx: AdminCtx,
-    Form(form): Form<CreateAdminForm>,
+    Form(form): Form<InviteForm>,
 ) -> Response {
     if !ctx.csrf_ok(&form.csrf) {
         return csrf_denied();
     }
-    let Some(key) = state.totp_key() else {
-        return admins_tpl(&state, &ctx, Some("Not ready: waiting for Vault.".into()));
-    };
     let username = form.username.trim().to_ascii_lowercase();
-    let ip = peer.ip().to_string();
-    match security::create_admin(&state.db, &key, &username, &form.password) {
-        Ok(e) => {
-            state.db.audit(
-                "admin",
-                &ctx.admin.username,
-                "admin-create",
-                &username,
-                "success",
-                Some(&ip),
-                None,
-            );
-            render(&EnrollmentTpl {
-                nav: ctx.nav(),
-                username,
-                otpauth_url: e.otpauth_url,
-                secret: e.secret_base32,
-                codes: e.recovery_codes,
-                signed_out: false,
-            })
-        }
-        Err(e) => admins_tpl(&state, &ctx, Some(e.to_string())),
-    }
+    issue_invite(&state, &ctx, &peer.ip().to_string(), "create", &username).await
 }
 
-async fn admins_reset_totp(
+/// Re-enrollment link for an existing admin (lost authenticator or forgotten
+/// password). Their current credentials keep working until it is completed,
+/// which then replaces them and signs out all of that admin's sessions.
+async fn admins_reenroll(
     State(state): State<Shared>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     ctx: AdminCtx,
@@ -805,37 +861,216 @@ async fn admins_reset_totp(
     if !ctx.csrf_ok(&form.csrf) {
         return csrf_denied();
     }
+    match state.db.admin(id) {
+        Ok(Some(a)) => {
+            issue_invite(&state, &ctx, &peer.ip().to_string(), "reset", &a.username).await
+        }
+        Ok(None) => admins_tpl(&state, &ctx, Some("No such admin.".into())),
+        Err(e) => internal(e),
+    }
+}
+
+// ---- enrollment (public, authorized by the one-time token) ------------------
+
+fn invite_gone() -> Response {
+    (
+        StatusCode::GONE,
+        render(&MessageTpl {
+            nav: None,
+            title: "Link not valid".into(),
+            message: "This enrollment link has expired, was already used, or had too many \
+                      wrong codes. Ask an admin for a new one (on first launch, certproxy \
+                      writes a new link to Vault automatically)."
+                .into(),
+        }),
+    )
+        .into_response()
+}
+
+fn enroll_error(e: security::EnrollError, retry: impl FnOnce(String) -> Response) -> Response {
+    match e {
+        security::EnrollError::Invalid => invite_gone(),
+        security::EnrollError::User(msg) => retry(msg),
+        security::EnrollError::Internal(e) => internal(e),
+    }
+}
+
+/// Step 1: choose a username (first launch only) and a password.
+async fn enroll_page(State(state): State<Shared>, Path(token): Path<String>) -> Response {
+    match security::invite_for(&state.db, &token) {
+        Ok(Some(inv)) => render(&EnrollTpl {
+            nav: None,
+            token,
+            reset: inv.purpose == "reset",
+            username: inv.username,
+            error: None,
+        }),
+        Ok(None) => invite_gone(),
+        Err(e) => internal(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct EnrollForm {
+    #[serde(default)]
+    username: String,
+    password: String,
+    confirm: String,
+}
+
+/// Step 2: show the new TOTP secret (QR code and base32) to the person
+/// enrolling, and ask for a code to prove their authenticator is set up.
+async fn enroll_submit(
+    State(state): State<Shared>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Path(token): Path<String>,
+    Form(form): Form<EnrollForm>,
+) -> Response {
     let Some(key) = state.totp_key() else {
-        return admins_tpl(&state, &ctx, Some("Not ready: waiting for Vault.".into()));
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Not ready: waiting for Vault.",
+        )
+            .into_response();
     };
-    let target = match state.db.admin(id) {
-        Ok(Some(a)) => a,
-        Ok(None) => return admins_tpl(&state, &ctx, Some("No such admin.".into())),
-        Err(e) => return internal(e),
+    let retry = |msg: String| {
+        let inv = security::invite_for(&state.db, &token).ok().flatten();
+        let (username, reset) = inv
+            .map(|i| (i.username, i.purpose == "reset"))
+            .unwrap_or((None, false));
+        (
+            StatusCode::BAD_REQUEST,
+            render(&EnrollTpl {
+                nav: None,
+                token: token.clone(),
+                username,
+                reset,
+                error: Some(msg),
+            }),
+        )
+            .into_response()
     };
-    let ip = peer.ip().to_string();
-    match security::reset_totp(&state.db, &key, id) {
-        Ok(e) => {
+    if form.password != form.confirm {
+        return retry("Passwords don't match.".into());
+    }
+    let (t, u, pw) = (token.clone(), form.username.clone(), form.password.clone());
+    let st = state.clone();
+    let result =
+        tokio::task::spawn_blocking(move || security::begin_enrollment(&st.db, &key, &t, &u, &pw))
+            .await
+            .unwrap_or_else(|e| Err(security::EnrollError::Internal(e.into())));
+    match result {
+        Ok(p) => {
+            let ip = peer.ip().to_string();
             state.db.audit(
-                "admin",
-                &ctx.admin.username,
-                "admin-reset-totp",
-                &target.username,
+                "enroll",
+                &p.username,
+                "enroll-start",
+                &p.username,
                 "success",
                 Some(&ip),
                 None,
             );
-            let signed_out = id == ctx.admin.id;
-            render(&EnrollmentTpl {
-                nav: if signed_out { None } else { ctx.nav() },
-                username: target.username,
-                otpauth_url: e.otpauth_url,
-                secret: e.secret_base32,
-                codes: e.recovery_codes,
-                signed_out,
+            render(&EnrollTotpTpl {
+                nav: None,
+                token,
+                username: p.username,
+                qr_svg: p.qr_svg,
+                secret: p.secret_base32,
+                otpauth_url: p.otpauth_url,
+                error: None,
             })
         }
-        Err(e) => internal(e),
+        Err(e) => enroll_error(e, retry),
+    }
+}
+
+#[derive(Deserialize)]
+struct ConfirmForm {
+    code: String,
+}
+
+/// Step 3: check the code, create (or re-enroll) the admin, show the recovery
+/// codes once, and delete the Vault copy of the link if there was one.
+async fn enroll_confirm(
+    State(state): State<Shared>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Path(token): Path<String>,
+    Form(form): Form<ConfirmForm>,
+) -> Response {
+    let Some(key) = state.totp_key() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Not ready: waiting for Vault.",
+        )
+            .into_response();
+    };
+    let ip = peer.ip().to_string();
+    match security::finish_enrollment(&state.db, &key, &token, &form.code) {
+        Ok(security::Confirmation::Done {
+            username,
+            purpose,
+            delivery,
+            recovery_codes,
+        }) => {
+            if delivery == "vault"
+                && let Err(e) = state.vault.kv_delete(&state.cfg.kv_bootstrap_path).await
+            {
+                tracing::error!(error = %e, "deleting the used enrollment link from Vault");
+            }
+            let action = if purpose == "reset" {
+                "enroll-reset-complete"
+            } else {
+                "enroll-complete"
+            };
+            state.db.audit(
+                "enroll",
+                &username,
+                action,
+                &username,
+                "success",
+                Some(&ip),
+                None,
+            );
+            render(&EnrollDoneTpl {
+                nav: None,
+                username,
+                codes: recovery_codes,
+            })
+        }
+        Ok(security::Confirmation::WrongCode { attempts_left }) => {
+            let pending = security::pending_enrollment(&state.db, &key, &token);
+            let who = pending
+                .as_ref()
+                .map(|p| p.username.clone())
+                .unwrap_or_default();
+            state.db.audit(
+                "enroll",
+                &who,
+                "enroll-confirm",
+                &who,
+                "failure",
+                Some(&ip),
+                None,
+            );
+            match pending {
+                Ok(p) => (
+                    StatusCode::UNAUTHORIZED,
+                    render(&EnrollTotpTpl {
+                        nav: None,
+                        token,
+                        username: p.username,
+                        qr_svg: p.qr_svg,
+                        secret: p.secret_base32,
+                        otpauth_url: p.otpauth_url,
+                        error: Some(format!("Wrong code. {attempts_left} attempt(s) left.")),
+                    }),
+                )
+                    .into_response(),
+                Err(e) => enroll_error(e, |m| (StatusCode::BAD_REQUEST, m).into_response()),
+            }
+        }
+        Err(e) => enroll_error(e, |m| (StatusCode::BAD_REQUEST, m).into_response()),
     }
 }
 
@@ -1043,21 +1278,91 @@ mod tests {
             (status, location, cookie, body)
         }
 
-        fn setup() -> (crate::state::Shared, axum::Router, security::Enrollment) {
-            let (state, _rx) = test_state();
-            let key = security::random_bytes::<32>();
-            state.set_totp_key(key);
-            let e = security::create_admin(&state.db, &key, "alice", password()).unwrap();
-            let app = app(state.clone());
-            (state, app, e)
+        /// What the enrolling person saw: their TOTP seed and recovery codes.
+        struct Enrolled {
+            secret: String,
+            codes: Vec<String>,
         }
 
-        fn code_for(e: &security::Enrollment) -> String {
-            let secret = totp_rs::Secret::try_from_base32(&e.secret_base32).unwrap();
-            security::totp_for(secret.as_bytes().to_vec(), "alice")
+        fn between<'a>(s: &'a str, start: &str, end: &str) -> &'a str {
+            let i = s
+                .find(start)
+                .unwrap_or_else(|| panic!("{start:?} not in page"))
+                + start.len();
+            &s[i..i + s[i..].find(end).unwrap()]
+        }
+
+        /// TOTP code `steps_ahead` time steps from now (the server accepts
+        /// one step of skew; each step can be used only once).
+        fn code_for(secret: &str, steps_ahead: u64) -> String {
+            let secret = totp_rs::Secret::try_from_base32(secret).unwrap();
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .generate_current()
+                .as_secs();
+            security::totp_for(secret.as_bytes().to_vec(), "x")
+                .unwrap()
+                .generate(now + 30 * steps_ahead)
                 .to_string()
+        }
+
+        /// Walk through /enroll/{token} like a browser would.
+        async fn enroll(
+            app: &axum::Router,
+            token: &str,
+            username: &str,
+            password: &str,
+        ) -> Enrolled {
+            let url = format!("/enroll/{token}");
+            let (st, _, _, _) = send(app, "GET", &url, None, None).await;
+            assert_eq!(st, StatusCode::OK, "enrollment page");
+            let form = format!("username={username}&password={password}&confirm={password}");
+            let (st, _, _, body) = send(app, "POST", &url, None, Some(&form)).await;
+            assert_eq!(st, StatusCode::OK, "{body}");
+            assert!(body.contains("<svg"), "QR code shown");
+            let secret =
+                between(&body, "Secret (base32): <code class=\"wrap\">", "</code>").to_string();
+            let form = format!("code={}", code_for(&secret, 0));
+            let (st, _, _, body) =
+                send(app, "POST", &format!("{url}/confirm"), None, Some(&form)).await;
+            assert_eq!(st, StatusCode::OK, "{body}");
+            let codes = body
+                .split("<li><code>")
+                .skip(1)
+                .map(|p| p[..p.find("</code>").unwrap()].to_string())
+                .collect::<Vec<_>>();
+            assert_eq!(codes.len(), security::RECOVERY_CODES);
+            Enrolled { secret, codes }
+        }
+
+        /// Password + TOTP login; returns the session cookie.
+        async fn login(app: &axum::Router, username: &str, password: &str, secret: &str) -> String {
+            let form = format!("username={username}&password={password}");
+            let (st, _, pw_cookie, _) = send(app, "POST", "/login", None, Some(&form)).await;
+            assert_eq!(st, StatusCode::SEE_OTHER);
+            // Enrollment consumed the current step, so use the next one.
+            let form = format!("code={}", code_for(secret, 1));
+            let (st, loc, cookie, _) = send(
+                app,
+                "POST",
+                "/login/totp",
+                pw_cookie.as_deref(),
+                Some(&form),
+            )
+            .await;
+            assert_eq!((st, loc.as_deref()), (StatusCode::SEE_OTHER, Some("/")));
+            cookie.expect("session cookie")
+        }
+
+        /// First-launch state: an admin "alice" enrolled through a bootstrap link.
+        async fn setup() -> (crate::state::Shared, axum::Router, Enrolled, String) {
+            let (state, _rx) = test_state();
+            state.set_totp_key(security::random_bytes::<32>());
+            let app = app(state.clone());
+            let (token, _) =
+                security::new_invite(&state.db, "bootstrap", None, "ui", "test", 600).unwrap();
+            let e = enroll(&app, &token, "alice", password()).await;
+            (state, app, e, token)
         }
 
         fn csrf_from(body: &str) -> String {
@@ -1068,7 +1373,7 @@ mod tests {
 
         #[tokio::test]
         async fn password_then_totp_login() {
-            let (_state, app, e) = setup();
+            let (_state, app, e, _) = setup().await;
 
             let (st, loc, _, _) = send(&app, "GET", "/", None, None).await;
             assert_eq!(
@@ -1099,9 +1404,9 @@ mod tests {
                 Some("code=000000"),
             )
             .await;
-            assert!(st == StatusCode::UNAUTHORIZED || code_for(&e) == "000000");
+            assert!(st == StatusCode::UNAUTHORIZED || code_for(&e.secret, 1) == "000000");
 
-            let form = format!("code={}", code_for(&e));
+            let form = format!("code={}", code_for(&e.secret, 1));
             let (st, loc, full_cookie, _) =
                 send(&app, "POST", "/login/totp", Some(&pw_cookie), Some(&form)).await;
             assert_eq!((st, loc.as_deref()), (StatusCode::SEE_OTHER, Some("/")));
@@ -1138,23 +1443,17 @@ mod tests {
 
         #[tokio::test]
         async fn recovery_code_login_and_lockout() {
-            let (state, app, e) = setup();
+            let (state, app, e, _) = setup().await;
             let form = format!("username=alice&password={}", password());
             let (_, _, pw_cookie, _) = send(&app, "POST", "/login", None, Some(&form)).await;
-            let rc = format!("code={}", e.recovery_codes[0]);
+            let rc = format!("code={}", e.codes[0]);
             let (st, loc, _, _) =
                 send(&app, "POST", "/login/totp", pw_cookie.as_deref(), Some(&rc)).await;
             assert_eq!((st, loc.as_deref()), (StatusCode::SEE_OTHER, Some("/")));
 
             for _ in 0..5 {
-                let (st, _, _, _) = send(
-                    &app,
-                    "POST",
-                    "/login",
-                    None,
-                    Some("username=alice&password=wrong"),
-                )
-                .await;
+                let wrong = format!("username=alice&password={}", security::random_token());
+                let (st, _, _, _) = send(&app, "POST", "/login", None, Some(&wrong)).await;
                 assert_eq!(st, StatusCode::UNAUTHORIZED);
             }
             let (st, _, cookie, _) = send(&app, "POST", "/login", None, Some(&form)).await;
@@ -1175,15 +1474,9 @@ mod tests {
 
         #[tokio::test]
         async fn unknown_user_and_headers() {
-            let (_state, app, _) = setup();
-            let (st, _, cookie, body) = send(
-                &app,
-                "POST",
-                "/login",
-                None,
-                Some("username=nobody&password=whatever"),
-            )
-            .await;
+            let (_state, app, _, _) = setup().await;
+            let form = format!("username=nobody&password={}", security::random_token());
+            let (st, _, cookie, body) = send(&app, "POST", "/login", None, Some(&form)).await;
             assert_eq!(st, StatusCode::UNAUTHORIZED);
             assert!(cookie.is_none());
             assert!(body.contains("Invalid credentials"));
@@ -1206,7 +1499,7 @@ mod tests {
 
         #[tokio::test]
         async fn api_rejects_before_vault() {
-            let (_state, app, _) = setup();
+            let (_state, app, _, _) = setup().await;
             let call = |token: Option<&str>, body: &str| {
                 let mut req = Request::builder()
                     .method("POST")
@@ -1226,6 +1519,122 @@ mod tests {
             assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
             let resp = call(Some("t"), r#"{"domains":[]}"#).await.unwrap();
             assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        }
+
+        #[tokio::test]
+        async fn enrollment_links_are_single_use_and_lock_after_wrong_codes() {
+            let (state, app, _, used) = setup().await;
+            let (st, _, _, _) = send(&app, "GET", &format!("/enroll/{used}"), None, None).await;
+            assert_eq!(st, StatusCode::GONE, "used link");
+            let (st, _, _, _) = send(&app, "GET", "/enroll/not-a-token", None, None).await;
+            assert_eq!(st, StatusCode::GONE, "unknown link");
+
+            let (token, _) =
+                security::new_invite(&state.db, "create", Some("bob"), "ui", "test", 600).unwrap();
+            let url = format!("/enroll/{token}");
+            let pw = security::random_token();
+            let (st, _, _, _) = send(
+                &app,
+                "POST",
+                &url,
+                None,
+                Some(&format!("password={pw}&confirm=x{pw}")),
+            )
+            .await;
+            assert_eq!(st, StatusCode::BAD_REQUEST, "passwords must match");
+            let (st, _, _, body) = send(
+                &app,
+                "POST",
+                &url,
+                None,
+                Some(&format!("password={pw}&confirm={pw}")),
+            )
+            .await;
+            assert_eq!(st, StatusCode::OK);
+            assert!(
+                body.contains("<strong>bob</strong>"),
+                "username fixed by invite"
+            );
+            for _ in 0..crate::db::INVITE_MAX_FAILURES {
+                let (st, _, _, _) = send(
+                    &app,
+                    "POST",
+                    &format!("{url}/confirm"),
+                    None,
+                    Some("code=1"),
+                )
+                .await;
+                assert!(st == StatusCode::UNAUTHORIZED || st == StatusCode::GONE);
+            }
+            let (st, _, _, _) = send(&app, "GET", &url, None, None).await;
+            assert_eq!(st, StatusCode::GONE, "locked after too many wrong codes");
+            assert!(state.db.admin_by_username("bob").unwrap().is_none());
+        }
+
+        #[tokio::test]
+        async fn invites_and_reenrollment_from_the_ui() {
+            let (state, app, e, _) = setup().await;
+            let cookie = login(&app, "alice", password(), &e.secret).await;
+            let (_, _, _, page) = send(&app, "GET", "/admins", Some(&cookie), None).await;
+            let csrf = csrf_from(&page);
+
+            // Invite bob: the inviter sees only a link.
+            let (st, _, _, body) = send(
+                &app,
+                "POST",
+                "/admins",
+                Some(&cookie),
+                Some("csrf=wrong&username=bob"),
+            )
+            .await;
+            assert_eq!(st, StatusCode::FORBIDDEN);
+            let form = format!("csrf={csrf}&username=bob");
+            let (st, _, _, body2) = send(&app, "POST", "/admins", Some(&cookie), Some(&form)).await;
+            assert_eq!(st, StatusCode::OK, "{body}");
+            let token = between(&body2, "/enroll/", "</code>").to_string();
+            assert!(
+                !body2.contains("otpauth://"),
+                "inviter never sees a TOTP seed"
+            );
+            let bob_pw = security::random_token();
+            enroll(&app, &token, "ignored", &bob_pw).await;
+            assert!(state.db.admin_by_username("bob").unwrap().is_some());
+
+            // Re-enroll alice: her session ends once she completes it.
+            let alice = state.db.admin_by_username("alice").unwrap().unwrap();
+            let form = format!("csrf={csrf}");
+            let (st, _, _, body) = send(
+                &app,
+                "POST",
+                &format!("/admins/{}/reenroll", alice.id),
+                Some(&cookie),
+                Some(&form),
+            )
+            .await;
+            assert_eq!(st, StatusCode::OK);
+            let token = between(&body, "/enroll/", "</code>").to_string();
+            let (st, _, _, _) = send(&app, "GET", "/", Some(&cookie), None).await;
+            assert_eq!(
+                st,
+                StatusCode::OK,
+                "still signed in until re-enrollment completes"
+            );
+            let new_pw = security::random_token();
+            let e2 = enroll(&app, &token, "ignored", &new_pw).await;
+            let (st, _, _, _) = send(&app, "GET", "/", Some(&cookie), None).await;
+            assert_eq!(
+                st,
+                StatusCode::SEE_OTHER,
+                "re-enrollment signs out old sessions"
+            );
+            login(&app, "alice", &new_pw, &e2.secret).await;
+            let audit = state.db.audit_entries(100).unwrap();
+            assert!(audit.iter().any(|a| a.action == "enroll-reset-complete"));
+            assert!(
+                audit
+                    .iter()
+                    .all(|a| !a.detail.clone().unwrap_or_default().contains(&token))
+            );
         }
     }
 }

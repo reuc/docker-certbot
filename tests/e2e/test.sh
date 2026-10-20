@@ -5,10 +5,11 @@
 #   VAULT_ADDR      Vault URL reachable from here
 #   CERTPROXY_URL   certproxy URL reachable from here (plain HTTP in tests)
 #   CREDS_DIR       dir with app1/app2 role_id/secret_id files (setup-vault.sh)
+#   VAULT_ADMIN_TOKEN  Vault token that can read the bootstrap link (dev: root)
 #   ADMIN_CMD       command that runs `certproxy admin` (args appended)
 #   DATA_DIR        optional: certproxy's data dir, to check nothing secret is left
 set -euo pipefail
-: "${VAULT_ADDR:?}" "${CERTPROXY_URL:?}" "${CREDS_DIR:?}" "${ADMIN_CMD:?}"
+: "${VAULT_ADDR:?}" "${CERTPROXY_URL:?}" "${CREDS_DIR:?}" "${ADMIN_CMD:?}" "${VAULT_ADMIN_TOKEN:?}"
 
 pass() { printf '[PASS] %s\n' "$*"; }
 fail() { printf '[FAIL] %s\n' "$*" >&2; exit 1; }
@@ -39,12 +40,12 @@ wait_job() { # token job_id -> final job JSON on stdout
   return 1
 }
 
-totp() { # base32 secret -> current code
-  python3 - "$1" <<'PY'
+totp() { # base32 secret [steps ahead] -> code
+  python3 - "$1" "${2:-0}" <<'PY'
 import base64, hashlib, hmac, struct, sys, time
 s = sys.argv[1]
 k = base64.b32decode(s + "=" * (-len(s) % 8))
-h = hmac.new(k, struct.pack(">Q", int(time.time()) // 30), hashlib.sha1).digest()
+h = hmac.new(k, struct.pack(">Q", int(time.time()) // 30 + int(sys.argv[2])), hashlib.sha1).digest()
 o = h[-1] & 15
 print("%06d" % ((struct.unpack(">I", h[o:o + 4])[0] & 0x7FFFFFFF) % 1000000))
 PY
@@ -112,21 +113,49 @@ if [ -n "${DATA_DIR:-}" ]; then
   pass "no certificate keys or DNS credentials left in the data dir"
 fi
 
-# ---- admin UI ----------------------------------------------------------------
+# ---- first-launch enrollment and admin UI -----------------------------------
+BOOT="$VAULT_ADDR/v1/secret/data/certproxy/bootstrap"
+vault_admin() { curl -sS -H "X-Vault-Token: $VAULT_ADMIN_TOKEN" "$@"; }
+for _ in $(seq 1 60); do
+  LINK=$(vault_admin "$BOOT" | jq -r '.data.data.enrollment_url // empty')
+  [ -n "$LINK" ] && break
+  sleep 1
+done
+[ -n "$LINK" ] || fail "no bootstrap enrollment link in Vault"
+case "$LINK" in /*) LINK="$CERTPROXY_URL$LINK" ;; esac
+pass "first launch wrote a one-time enrollment link to Vault"
+
 PW="e2e-$(head -c 12 /dev/urandom | base64 | tr -dc 'A-Za-z0-9')"
-printf '%s\n' "$PW" | $ADMIN_CMD create e2e-admin >"$WORK/enroll.txt" || fail "admin create failed"
-SECRET=$(sed -n 's/^TOTP secret (base32): //p' "$WORK/enroll.txt")
-[ -n "$SECRET" ] || fail "no TOTP secret printed"
-pass "admin created via CLI"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$LINK")" = 200 ] || fail "enrollment page not reachable"
+curl -fsS --data-urlencode username=e2e-admin --data-urlencode "password=$PW" --data-urlencode "confirm=$PW" \
+  "$LINK" >"$WORK/enroll.html" || fail "enrollment step 1 failed"
+grep -q '<svg' "$WORK/enroll.html" || fail "no QR code on the enrollment page"
+SECRET=$(grep -o 'Secret (base32): <code class="wrap">[A-Z2-7=]*' "$WORK/enroll.html" | sed 's/.*">//')
+[ -n "$SECRET" ] || fail "no TOTP secret on the enrollment page"
+curl -fsS --data-urlencode "code=$(totp "$SECRET")" "$LINK/confirm" >"$WORK/done.html" || fail "enrollment confirm failed"
+[ "$(grep -o '<li><code>' "$WORK/done.html" | wc -l | tr -d ' ')" = 10 ] || fail "expected 10 recovery codes"
+pass "admin enrolled in the browser (password, QR code, confirmation code, recovery codes)"
+
+[ "$(vault_admin -o /dev/null -w '%{http_code}' "$BOOT")" = 404 ] || fail "bootstrap link not deleted from Vault"
+[ "$(curl -s -o /dev/null -w '%{http_code}' "$LINK")" = 410 ] || fail "used enrollment link still works"
+pass "enrollment link deleted from Vault and no longer usable"
 
 JAR="$WORK/cookies"
 code=$(curl -s -o /dev/null -w '%{http_code}' -c "$JAR" --data-urlencode username=e2e-admin --data-urlencode "password=$PW" "$CERTPROXY_URL/login")
 [ "$code" = 303 ] || fail "password step failed (HTTP $code)"
-code=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" -c "$JAR" --data-urlencode "code=$(totp "$SECRET")" "$CERTPROXY_URL/login/totp")
+# The confirmation code's time step was consumed, so sign in with the next one.
+code=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" -c "$JAR" --data-urlencode "code=$(totp "$SECRET" 1)" "$CERTPROXY_URL/login/totp")
 [ "$code" = 303 ] || fail "TOTP step failed (HTTP $code)"
 curl -fsS -b "$JAR" "$CERTPROXY_URL/" >"$WORK/dash.html"
 grep -q 'app1.e2e.test' "$WORK/dash.html" || fail "dashboard does not list the certificate"
 pass "admin login with password + TOTP; dashboard lists the certificate"
+
+# Break-glass CLI: writes a new link to Vault and prints no secret.
+$ADMIN_CMD invite e2e-admin --reset >"$WORK/invite.txt" 2>&1 || fail "admin invite failed: $(cat "$WORK/invite.txt")"
+NEWLINK=$(vault_admin "$BOOT" | jq -r '.data.data.enrollment_url // empty')
+[ -n "$NEWLINK" ] || fail "admin invite did not write a link to Vault"
+! grep -q "${NEWLINK##*/}" "$WORK/invite.txt" || fail "admin invite printed the link"
+pass "admin invite writes the link to Vault without printing it"
 
 curl -fsS -b "$JAR" "$CERTPROXY_URL/certs/app1.e2e.test" >"$WORK/cert.html"
 CSRF=$(grep -o 'name="csrf" value="[^"]*"' "$WORK/cert.html" | head -1 | sed 's/.*value="//; s/"$//')

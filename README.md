@@ -110,7 +110,7 @@ grype reads every PyPI package in the virtualenv, so the CVE gate covers them. I
   - It issues the certificate with acme.sh over Cloudflare DNS-01 and writes certificate, key and chain to `secret/data/certs/<name>`.
   - The app reads the certificate from Vault. The API never returns private keys.
 - **Renewal:** a background loop renews certificates automatically, with a new key each time.
-- **The web UI** uses local accounts: password, then a TOTP code or a one-time recovery code. Admins see certificates, jobs and the audit log, and can renew certificates, manage admins and change passwords. Five failed attempts lock an account for 15 minutes. You create the first admin with `certproxy admin create`.
+- **The web UI** uses local accounts: password, then a TOTP code or a one-time recovery code. Admins see certificates, jobs and the audit log, and can renew certificates, manage admins and change passwords. Five failed attempts lock an account for 15 minutes. The first admin enrolls through a one-time link that certproxy writes to Vault, and every later admin through a one-time link from the UI, so nobody else ever sees their password, TOTP seed or recovery codes.
 - **The image** runs as UID 65532 with no package manager. It keeps busybox because acme.sh is a shell script, so it can't be distroless like the Certbot image.
 - **Secrets stay in Vault.** The Cloudflare token and the key that encrypts TOTP secrets are read from Vault at runtime. After each run, certproxy deletes the certificate's key from disk and strips the credentials acme.sh saves.
 - **Deployment and tests:** a Docker Compose deployment, Vault policies with a setup script, a smoke test and an end-to-end test. New Makefile targets, and two CI changes: certproxy added on amd64 and arm64, plus a `certproxy checks` job.
@@ -138,6 +138,8 @@ grype reads every PyPI package in the virtualenv, so the CVE gate covers them. I
 - `setup.sh` writes the AppRole credential files. Run it as root, or `chown 65532:65532` those files afterwards; it tells you when.
 - Start with `ACME_SERVER=letsencrypt_test` (Let's Encrypt staging), then switch to `letsencrypt`.
 - Run one replica only when you move to Kubernetes, because the job queue, database and ACME account can't be shared.
+- There's no default account or password. On first launch, read the one-time enrollment link from Vault (`vault kv get -field=enrollment_url secret/certproxy/bootstrap`) and enroll in the browser; see [First launch](#first-launch).
+- After first launch, work through [Securing it after first launch](#securing-it-after-first-launch).
 
 ### How it works
 
@@ -164,7 +166,7 @@ export VAULT_ADDR=https://vault.netseclabs.com VAULT_TOKEN=<admin token>
 CF_TOKEN=<Cloudflare API token with Zone:DNS:Edit> ./deploy/vault/setup.sh
 ```
 
-This creates the `certproxy` policy (`deploy/vault/certproxy-policy.hcl`) and AppRole role, stores the Cloudflare token at `secret/certproxy/dns` and a TOTP encryption key at `secret/certproxy/app`, and writes the AppRole credentials to `deploy/compose/secrets/`. Run it as root, or `sudo chown 65532:65532` the two files afterwards as it tells you: the container runs as UID 65532.
+This creates the `certproxy` policy (`deploy/vault/certproxy-policy.hcl`, which also covers the one-time enrollment link at `secret/certproxy/bootstrap`) and AppRole role, stores the Cloudflare token at `secret/certproxy/dns` and a TOTP encryption key at `secret/certproxy/app`, and writes the AppRole credentials to `deploy/compose/secrets/`. Run it as root, or `sudo chown 65532:65532` the two files afterwards as it tells you: the container runs as UID 65532.
 
 Grant each app a policy like `deploy/vault/app-policy.example.hcl`:
 
@@ -200,13 +202,40 @@ The KV secret has the fields `certificate`, `private_key`, `chain`, `fullchain`,
 
 ### Web UI
 
-Admins sign in at `https://<host>:8443/` with a **username and password, then a TOTP code** from an authenticator app (or a one-time recovery code). The UI shows certificates and expiry, jobs, and the audit log. Admins can renew a certificate, manage other admins, reset TOTP and change their password. It never shows private keys.
+Admins sign in at `https://<host>:8443/` with a **username and password, then a TOTP code** from an authenticator app (or a one-time recovery code). The UI shows certificates and expiry, jobs, and the audit log. Admins can renew a certificate, invite other admins, send re-enrollment links, and change their password. It never shows private keys.
 
-Create the first admin with the CLI, which reads the password from stdin and prints the TOTP enrollment URI and 10 recovery codes:
+#### First launch
+
+certproxy has no default account and no built-in password. Every admin, including the first, enrolls through a **one-time link** (single use, 30 minutes by default):
+
+1. Start certproxy. Once it's logged in to Vault and finds no admin, it writes the link to **`secret/certproxy/bootstrap`** in Vault. The log shows only that path and the expiry, never the link. If the link expires unused, certproxy writes a new one.
+2. An operator with read access to that path (for example with `deploy/vault/bootstrap-reader-policy.example.hcl`) gets the link:
+   ```bash
+   vault kv get -field=enrollment_url secret/certproxy/bootstrap
+   ```
+3. The new admin opens it over HTTPS, chooses a username and password, scans the QR code with an authenticator app, and confirms one 6-digit code. The admin account is only created after that code is confirmed, so a mis-scanned authenticator can't lock them out.
+4. Ten recovery codes are shown **once**, so store them offline. certproxy marks the link used and **deletes it from Vault**.
+
+The password, TOTP seed and recovery codes are only ever shown to the person enrolling, in their browser. They're never printed, logged or written to disk; the TOTP seed is stored encrypted. Set `PUBLIC_URL` (or `PUBLIC_HOSTNAME` with `TLS_MODE=self`) so the link is a complete URL.
+
+More admins: on **Admins → Invite an admin**, enter a username to get a one-time link to pass on. The inviter never sees the new admin's password or seed. **Re-enrollment link** does the same for an existing admin who lost their authenticator or password; their old credentials keep working until they finish, then all their sessions are signed out. If every admin is locked out, run this inside the container:
 
 ```bash
-docker compose exec certproxy certproxy admin create alice
+docker compose exec certproxy certproxy admin invite <username> --reset
 ```
+
+It writes a new link to the same Vault path and prints only where to find it.
+
+#### Securing it after first launch
+
+1. **Check the link is gone.** `vault kv get secret/certproxy/bootstrap` should fail. Revoke any token you created just to read it.
+2. **Switch ACME to production:** change `ACME_SERVER` from `letsencrypt_test` to `letsencrypt`.
+3. **Keep HTTPS on:** `TLS_MODE=self` or `files`. Use `none` only behind a TLS-terminating proxy.
+4. **Lock the AppRole to the host:** bind certproxy's `secret_id` and tokens to it (`secret_id_bound_cidrs`, `token_bound_cidrs`) and rotate the `secret_id` periodically. The commands are in the comments at the top of `deploy/vault/setup.sh`.
+5. **Limit access to the container:**
+   - Limit who can `docker exec` into it or read the `certproxy-data` volume, which holds the ACME account key and the admin database.
+   - Restrict who can reach the web UI with a firewall or reverse proxy, but keep `/api/` reachable for apps.
+6. **Plan for lockouts:** invite a second admin for break-glass access, keep recovery codes offline, and review the audit log regularly.
 
 Passwords are hashed with Argon2id and must be at least 12 characters. TOTP secrets are encrypted with AES-256-GCM using the key from Vault, and each code is accepted only once. Five failed attempts lock an account for 15 minutes. Sessions use random tokens (stored hashed) in `HttpOnly`, `SameSite=Strict`, `Secure` cookies, and every form carries a CSRF token. A strict Content-Security-Policy is applied and the UI uses no JavaScript.
 
@@ -234,6 +263,9 @@ The Compose service runs read-only, with all capabilities dropped and `no-new-pr
 | `RENEW_BEFORE_DAYS` | `30` | Renewal window (capped at a third of the lifetime) |
 | `RATE_LIMIT_PER_HOUR` | `20` | Requests per app identity per hour |
 | `SESSION_HOURS` | `8` | Admin session lifetime |
+| `PUBLIC_URL` | | Base URL in enrollment links (default `https://PUBLIC_HOSTNAME:<port>` with `TLS_MODE=self`) |
+| `INVITE_TTL_MINUTES` | `30` | How long an enrollment link stays valid |
+| `KV_BOOTSTRAP_PATH` | `certproxy/bootstrap` | Vault KV path where first-launch and CLI enrollment links are written |
 | `LOG_FORMAT` | | `json` for JSON logs |
 
 ### Security notes
@@ -256,7 +288,9 @@ The service is ready to move. Configuration is all env vars, state lives only in
 - issuance, and that the app can read the certificate and matching key from Vault while other apps can't
 - certificate reuse, and that the API returns no key material
 - that no keys or credentials are left on disk
-- CLI admin creation, then password + TOTP login and the dashboard
+- first launch: the enrollment link appears in Vault, browser enrollment (password, QR code, confirmation code, recovery codes), then the link is deleted and no longer works
+- password + TOTP login and the dashboard
+- `admin invite` writes a new link to Vault without printing it, and no link ever appears in certproxy's logs
 - a renewal from the UI, which must produce a new key
 - the audit log
 

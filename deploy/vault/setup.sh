@@ -8,6 +8,20 @@
 # Creates the "certproxy" policy and AppRole role, stores the Cloudflare API
 # token and a fresh TOTP encryption key in KV, and writes the role_id and a
 # secret_id for Docker Compose to the output dir (default: deploy/compose/secrets).
+#
+# First launch: there are no admin accounts and no default password. When
+# certproxy starts and finds no admin, it writes a one-time enrollment link
+# to secret/certproxy/bootstrap. Read it with
+#   vault kv get -field=enrollment_url secret/certproxy/bootstrap
+# (needs a token with deploy/vault/bootstrap-reader-policy.example.hcl or
+# similar), open it in a browser, and enroll: choose a password, scan the QR
+# code, confirm a code, save the recovery codes. certproxy then deletes it.
+#
+# After first launch, harden the AppRole: bind the secret_id and tokens to the
+# certproxy host and rotate the secret_id periodically, e.g.
+#   vault write auth/approle/role/certproxy secret_id_bound_cidrs=<host>/32 token_bound_cidrs=<host>/32
+#   vault write -f auth/approle/role/certproxy/secret-id   # new secret_id; then
+#   vault write auth/approle/role/certproxy/secret-id-accessor/destroy secret_id_accessor=<old>
 set -euo pipefail
 
 : "${VAULT_ADDR:?set VAULT_ADDR}" "${VAULT_TOKEN:?set VAULT_TOKEN}" "${CF_TOKEN:?set CF_TOKEN (Cloudflare API token with Zone:DNS:Edit)}"

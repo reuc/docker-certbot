@@ -51,6 +51,13 @@ pub struct Config {
     pub kv_dns_path: String,
     /// KV path holding certproxy's own secrets (`totp_key`).
     pub kv_app_path: String,
+    /// KV path where one-time enrollment links for operators are written
+    /// (first launch, and `certproxy admin invite`).
+    pub kv_bootstrap_path: String,
+    /// Base URL used in enrollment links, e.g. `https://certproxy.example.com:8443`.
+    pub public_url: Option<String>,
+    /// How long an enrollment link stays valid.
+    pub invite_ttl: Duration,
     /// Policy-only path prefix used for the per-domain authorization check.
     pub request_marker_prefix: String,
 
@@ -156,6 +163,9 @@ impl Config {
             kv_certs_prefix: var_or("KV_CERTS_PREFIX", "certs"),
             kv_dns_path: var_or("KV_DNS_PATH", "certproxy/dns"),
             kv_app_path: var_or("KV_APP_PATH", "certproxy/app"),
+            kv_bootstrap_path: var_or("KV_BOOTSTRAP_PATH", "certproxy/bootstrap"),
+            public_url: var("PUBLIC_URL").map(|u| u.trim_end_matches('/').to_string()),
+            invite_ttl: Duration::from_secs(60 * parse_or::<u64>("INVITE_TTL_MINUTES", 30)?),
             request_marker_prefix: var_or("REQUEST_MARKER_PREFIX", "cert-requests"),
             acme_sh: PathBuf::from(var_or("ACME_SH", "/usr/bin/acme.sh")),
             acme_server: var_or("ACME_SERVER", "letsencrypt"),
@@ -186,6 +196,22 @@ impl Config {
 
     pub fn acme_home(&self) -> PathBuf {
         self.data_dir.join("acme")
+    }
+
+    /// Base URL for links shown to people: `PUBLIC_URL`, else derived from
+    /// `PUBLIC_HOSTNAME` in self-issued TLS mode, else `None` (links are then
+    /// given as a path to append to certproxy's address).
+    pub fn base_url(&self) -> Option<String> {
+        if let Some(u) = &self.public_url {
+            return Some(u.clone());
+        }
+        match &self.tls {
+            TlsMode::SelfIssued { hostname } => Some(match self.listen.port() {
+                443 => format!("https://{hostname}"),
+                port => format!("https://{hostname}:{port}"),
+            }),
+            _ => None,
+        }
     }
 
     /// Cookies get the `Secure` flag unless the UI is served over plain HTTP.

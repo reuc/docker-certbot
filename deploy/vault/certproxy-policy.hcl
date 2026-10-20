@@ -17,3 +17,13 @@ path "secret/data/certproxy/dns" {
 path "secret/data/certproxy/app" {
   capabilities = ["read"]
 }
+
+# One-time enrollment links for operators (first launch, and
+# `certproxy admin invite`). certproxy writes the link here and deletes the
+# whole entry (all versions) once it has been used.
+path "secret/data/certproxy/bootstrap" {
+  capabilities = ["create", "update", "read"]
+}
+path "secret/metadata/certproxy/bootstrap" {
+  capabilities = ["delete"]
+}
