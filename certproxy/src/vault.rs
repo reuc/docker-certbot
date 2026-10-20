@@ -14,6 +14,7 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use reqwest::{Method, StatusCode};
+use rustls_pki_types::{CertificateDer, pem::PemObject};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use tokio::sync::RwLock;
@@ -29,8 +30,14 @@ pub fn tls_client_config(extra_ca: Option<&Path>) -> Result<rustls::ClientConfig
     }
     if let Some(path) = extra_ca {
         let pem = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-        for cert in rustls_pemfile::certs(&mut pem.as_slice()) {
+        let mut added = 0;
+        for cert in CertificateDer::pem_slice_iter(&pem) {
             roots.add(cert.context("parsing extra CA certificate")?)?;
+            added += 1;
+        }
+        // A wrong path (say, to a key file) must not silently trust nothing extra.
+        if added == 0 {
+            bail!("no CA certificates found in {}", path.display());
         }
     }
     if roots.is_empty() {
@@ -449,6 +456,25 @@ mod tests {
         let body = json!({ "data": { "capabilities": ["create", "update"] } });
         let paths = vec!["cert-requests/a.example.com".to_string()];
         assert!(allows_update(&parse_capabilities(&body, &paths)[&paths[0]]));
+    }
+
+    #[test]
+    fn extra_ca_pem() {
+        let dir = std::env::temp_dir().join(format!("certproxy-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ck = rcgen::generate_simple_self_signed(vec!["vault.example.com".to_string()]).unwrap();
+
+        let ca = dir.join("ca.pem");
+        std::fs::write(&ca, ck.cert.pem()).unwrap();
+        assert!(tls_client_config(Some(&ca)).is_ok());
+
+        // A PEM file holding only a key is a misconfiguration, not an empty bundle.
+        let key = dir.join("key.pem");
+        std::fs::write(&key, ck.signing_key.serialize_pem()).unwrap();
+        let err = tls_client_config(Some(&key)).unwrap_err();
+        assert!(err.to_string().contains("no CA certificates"), "{err}");
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
