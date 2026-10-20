@@ -296,13 +296,13 @@ The service is ready to move. Configuration is all env vars, state lives only in
 
 ### Publishing to Docker Hub
 
-`.github/workflows/publish-certproxy.yml` publishes **`docker.io/<DOCKER_USER>/wolfi-certproxy`** for `linux/amd64` and `linux/arm64` from the `CertBot` branch.
+`.github/workflows/publish-certproxy.yml` publishes **`docker.io/<DOCKER_USER>/wolfi-certproxy`** for `linux/amd64` and `linux/arm64` from `main`.
 
 **When it runs:**
-- on every push to `CertBot` that touches certproxy, its Dockerfile, tests, the Makefile or the workflow
+- on every push to `main` that touches certproxy, its Dockerfile, tests, the Makefile or the workflow
 - daily at 07:23 UTC, so new Wolfi security fixes are published without a code change
 - on demand (**Actions → publish-certproxy → Run workflow**)
-- on pull requests into `CertBot` that change the workflow, as a **dry run**: the gates run, but nothing is logged in or pushed
+- on pull requests into `main` that change the workflow, as a **dry run**: the gates run, but nothing is logged in or pushed
 
 **Gates:** each architecture is built natively, then must pass the architecture check, the smoke test and the grype CVE gate (0 Critical, fewer than 2 High, 5 Medium and 10 Low). amd64 also runs the end-to-end test against Vault and Pebble. Only the **exact image that passed** is pushed. If either architecture fails, nothing is published.
 
@@ -320,8 +320,6 @@ All tags except the date are **rebuilt and moved by the daily run**: `sha-<commi
 - **`DOCKER_USER`:** your Docker Hub username or organization. As a *variable* it shows in run summaries; as a *secret* it's masked.
 - **`DOCKER_TOKEN`:** a Docker Hub **personal access token** with *Read & Write* scope. Don't use your account password.
 - Docker Hub creates the `wolfi-certproxy` repository on the first push. Check its visibility (public or private) afterwards.
-
-**Why it's also on `main`:** GitHub only runs scheduled workflows, and only shows "Run workflow", from the default branch. So the same file is also on `main`. Those runs check out and build `CertBot`; no certproxy code lives on `main`.
 
 **Verify an image before deploying it:**
 
