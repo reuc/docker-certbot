@@ -70,7 +70,7 @@ jobs:
       PLATFORM: linux/${{ matrix.arch }}
       ARCH: ${{ matrix.arch }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -185,7 +185,7 @@ jobs:
       id-token: write # keyless cosign signing
       attestations: write # build provenance
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
