@@ -13,7 +13,7 @@ use argon2::{
     password_hash::{PasswordHasher, PasswordVerifier, phc::PasswordHash},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use rand::Rng;
+use rand::RngExt;
 use sha2::{Digest, Sha256};
 use totp_rs::{Builder, Totp};
 
@@ -24,9 +24,7 @@ pub const RECOVERY_CODES: usize = 10;
 const TOTP_ISSUER: &str = "certproxy";
 
 pub fn random_bytes<const N: usize>() -> [u8; N] {
-    let mut buf = [0u8; N];
-    rand::rng().fill_bytes(&mut buf);
-    buf
+    rand::rng().random()
 }
 
 /// URL-safe random token with 256 bits of entropy.
@@ -55,11 +53,11 @@ pub fn verify_password(password: &str, hash: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// A real hash to verify against when the username doesn't exist, so that
-/// unknown and known usernames take the same time.
+/// A real hash (of a random, discarded password) to verify against when the
+/// username doesn't exist, so unknown and known usernames take the same time.
 pub fn dummy_hash() -> &'static str {
     static HASH: OnceLock<String> = OnceLock::new();
-    HASH.get_or_init(|| hash_password("certproxy-dummy-password").unwrap_or_default())
+    HASH.get_or_init(|| hash_password(&random_token()).unwrap_or_default())
 }
 
 pub fn check_password_policy(password: &str) -> Result<()> {
@@ -134,7 +132,7 @@ fn generate_recovery_codes() -> Vec<String> {
     (0..RECOVERY_CODES)
         .map(|_| {
             let raw: String = (0..12)
-                .map(|_| ALPHABET[(rng.next_u32() as usize) % ALPHABET.len()] as char)
+                .map(|_| ALPHABET[rng.random_range(0..ALPHABET.len())] as char)
                 .collect();
             format!("{}-{}-{}", &raw[..4], &raw[4..8], &raw[8..])
         })
@@ -208,12 +206,14 @@ mod tests {
 
     #[test]
     fn password_roundtrip() {
-        let h = hash_password("correct horse battery").unwrap();
+        let password = random_token();
+        let h = hash_password(&password).unwrap();
         assert!(h.starts_with("$argon2id$"));
-        assert!(verify_password("correct horse battery", &h));
-        assert!(!verify_password("wrong", &h));
-        assert!(!verify_password("x", "not-a-hash"));
-        assert!(check_password_policy("short").is_err());
+        assert!(verify_password(&password, &h));
+        assert!(!verify_password(&random_token(), &h));
+        assert!(!verify_password(&password, "not-a-hash"));
+        assert!(check_password_policy(&password[..MIN_PASSWORD_LEN - 1]).is_err());
+        assert!(check_password_policy(&password).is_ok());
     }
 
     #[test]
@@ -236,10 +236,11 @@ mod tests {
     fn admin_enrollment_and_totp() {
         let db = Db::in_memory().unwrap();
         let key = random_bytes::<32>();
-        let e = create_admin(&db, &key, "alice", "a long enough password").unwrap();
+        let password = random_token();
+        let e = create_admin(&db, &key, "alice", &password).unwrap();
         assert!(e.otpauth_url.starts_with("otpauth://totp/certproxy:alice?"));
         assert_eq!(e.recovery_codes.len(), RECOVERY_CODES);
-        assert!(create_admin(&db, &key, "alice", "a long enough password").is_err());
+        assert!(create_admin(&db, &key, "alice", &password).is_err());
 
         let admin = db.admin_by_username("alice").unwrap().unwrap();
         let secret = totp_rs::Secret::try_from_base32(&e.secret_base32).unwrap();

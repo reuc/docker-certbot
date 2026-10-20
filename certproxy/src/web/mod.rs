@@ -992,7 +992,11 @@ mod tests {
 
         use crate::{security, state::tests::test_state};
 
-        const PASSWORD: &str = "a long enough password";
+        /// Generated once per test run; never a hard-coded credential.
+        fn password() -> &'static str {
+            static PW: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+            PW.get_or_init(security::random_token)
+        }
 
         fn app(state: crate::state::Shared) -> axum::Router {
             crate::app(state).layer(MockConnectInfo(SocketAddr::from(([127, 0, 0, 1], 4000))))
@@ -1043,7 +1047,7 @@ mod tests {
             let (state, _rx) = test_state();
             let key = security::random_bytes::<32>();
             state.set_totp_key(key);
-            let e = security::create_admin(&state.db, &key, "alice", PASSWORD).unwrap();
+            let e = security::create_admin(&state.db, &key, "alice", password()).unwrap();
             let app = app(state.clone());
             (state, app, e)
         }
@@ -1072,7 +1076,7 @@ mod tests {
                 (StatusCode::SEE_OTHER, Some("/login"))
             );
 
-            let form = format!("username=alice&password={}", PASSWORD.replace(' ', "+"));
+            let form = format!("username=alice&password={}", password());
             let (st, loc, pw_cookie, _) = send(&app, "POST", "/login", None, Some(&form)).await;
             assert_eq!(
                 (st, loc.as_deref()),
@@ -1135,7 +1139,7 @@ mod tests {
         #[tokio::test]
         async fn recovery_code_login_and_lockout() {
             let (state, app, e) = setup();
-            let form = format!("username=alice&password={}", PASSWORD.replace(' ', "+"));
+            let form = format!("username=alice&password={}", password());
             let (_, _, pw_cookie, _) = send(&app, "POST", "/login", None, Some(&form)).await;
             let rc = format!("code={}", e.recovery_codes[0]);
             let (st, loc, _, _) =

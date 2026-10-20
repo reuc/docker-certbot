@@ -280,7 +280,7 @@ async fn admin(cfg: Config, command: AdminCommand) -> Result<()> {
                 None,
                 None,
             );
-            println!("deleted {username}");
+            println!("admin deleted");
         }
     }
     Ok(())
