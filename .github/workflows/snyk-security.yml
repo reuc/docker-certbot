@@ -49,8 +49,26 @@ jobs:
       - name: Snyk Code test
         run: snyk code test --sarif > snyk-code.sarif
 
+      # Snyk resolves a pip requirements.txt from the installed packages, not
+      # its pins ("Missing required packages" otherwise). Install Certbot's
+      # hash-locked requirements into a venv, as Dockerfile.certbot does, and
+      # point Snyk at that venv.
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Install Certbot's locked requirements
+        run: |
+          python -m venv .snyk-venv
+          .snyk-venv/bin/pip install --require-hashes --only-binary=:all: --no-deps -r certbot/requirements.txt
+          .snyk-venv/bin/pip check
+
       - name: Snyk Open Source monitor
-        run: snyk monitor --all-projects
+        run: |
+          export VIRTUAL_ENV="$PWD/.snyk-venv" PATH="$PWD/.snyk-venv/bin:$PATH"
+          snyk monitor --file=certbot/requirements.txt --package-manager=pip \
+            --command="$VIRTUAL_ENV/bin/python"
 
       - name: Snyk Infrastructure as Code (IaC) test and report
         run: snyk iac test --report
