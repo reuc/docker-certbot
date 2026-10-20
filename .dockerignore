@@ -1,2 +1,11 @@
-# Nothing from the build context is needed; keep it empty.
+# Keep the build context minimal: only what a Dockerfile COPYs.
 *
+!certbot/requirements.txt
+!certproxy/Cargo.toml
+!certproxy/Cargo.lock
+!certproxy/src
+!certproxy/src/**
+!certproxy/templates
+!certproxy/templates/**
+!certproxy/static
+!certproxy/static/**

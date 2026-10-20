@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Certificates</h1>
+<p class="muted">Renewed automatically when less than {{ renew_before_days }} days or a third of the certificate's lifetime remains, whichever is shorter.</p>
+{% if certs.is_empty() %}
+<p>No certificates yet. Apps request them through <code>POST /api/v1/certificates</code>.</p>
+{% else %}
+<table>
+  <thead><tr><th>Name</th><th>Domains</th><th>Expires</th><th>Days left</th><th>Vault version</th></tr></thead>
+  <tbody>
+  {% for c in certs %}
+  <tr>
+    <td><a href="/certs/{{ c.name }}">{{ c.name }}</a></td>
+    <td>{{ c.domains }}</td>
+    <td>{{ c.not_after }}</td>
+    <td class="{% if c.days_left < 7 %}bad{% else if c.days_left < renew_before_days %}warn{% else %}ok{% endif %}">{{ c.days_left }}</td>
+    <td>{{ c.version }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+<h2>Recent jobs</h2>
+{% include "jobs_table.html" %}
+<p><a href="/jobs">All jobs</a></p>
+{% endblock %}

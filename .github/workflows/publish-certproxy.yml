@@ -1,17 +1,13 @@
 # Build, test and publish the certproxy image to Docker Hub.
 #
 # Publishes docker.io/<DOCKER_USER>/wolfi-certproxy (linux/amd64 + linux/arm64)
-# from the CertBot branch, only after the smoke test, the grype CVE gate and
+# from main, only after the smoke test, the grype CVE gate and
 # the end-to-end test pass on the exact image that gets pushed. Each
 # architecture image gets an SBOM attestation and a cosign signature; the
 # multi-arch index gets a cosign signature and SLSA build provenance.
 #
 # Tags: latest, YYYYMMDD, sha-<short commit>, and the certproxy version from
 # certproxy/Cargo.toml. Pin deployments by digest.
-#
-# This same file also lives on the default branch (main): GitHub only runs
-# scheduled workflows (and offers "Run workflow") from there. Scheduled and
-# manual runs always check out and build the CertBot branch.
 #
 # Repository settings needed:
 #   DOCKER_USER   Docker Hub user/namespace (a variable or a secret)
@@ -20,7 +16,7 @@ name: publish-certproxy
 
 on:
   push:
-    branches: [CertBot]
+    branches: [main]
     paths:
       - "certproxy/**"
       - "Dockerfile.certproxy"
@@ -35,7 +31,7 @@ on:
   workflow_dispatch:
   # Dry run on PRs that change this workflow: gates only, no login or push.
   pull_request:
-    branches: [CertBot]
+    branches: [main]
     paths:
       - ".github/workflows/publish-certproxy.yml"
 
@@ -50,8 +46,6 @@ concurrency:
 env:
   IMAGE: wolfi-certproxy
   DOCKER_NS: ${{ vars.DOCKER_USER || secrets.DOCKER_USER }}
-  # Scheduled and manual runs (which start from main) build CertBot.
-  SOURCE_REF: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'CertBot' || github.sha }}
   PUBLISH: ${{ github.event_name != 'pull_request' }}
 
 jobs:
@@ -78,7 +72,6 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ env.SOURCE_REF }}
           persist-credentials: false
 
       - name: Source commit
@@ -194,7 +187,6 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ env.SOURCE_REF }}
           persist-credentials: false
 
       - name: Tags
@@ -260,7 +252,7 @@ jobs:
             echo "| Digest | \`${DIGEST}\` |"
             echo "| Tags | \`latest\`, \`${DATE}\`, \`sha-${SHORT}\`, \`${VERSION}\` |"
             echo "| Platforms | linux/amd64, linux/arm64 |"
-            echo "| Source | ${REPO_SLUG}@${SHORT} (CertBot) |"
+            echo "| Source | ${REPO_SLUG}@${SHORT} |"
             echo
             echo "Pull by digest: \`docker pull ${repo}@${DIGEST}\`"
             echo

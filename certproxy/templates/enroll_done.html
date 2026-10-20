@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Enrollment complete · certproxy{% endblock %}
+{% block content %}
+<h1>You're set up, {{ username }}</h1>
+<p class="warn">These recovery codes are shown only once. Each works once instead of an authenticator code. Store them offline.</p>
+<ul class="codes">
+{% for c in codes %}<li><code>{{ c }}</code></li>{% endfor %}
+</ul>
+<p>This enrollment link no longer works. <a href="/login">Sign in</a> with your password and authenticator code.</p>
+{% endblock %}

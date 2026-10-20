@@ -1,0 +1,16 @@
+# Certbot and every official DNS plugin, all at the same release.
+# Edit the version here, then regenerate the lock file with: make certbot-lock
+certbot==5.8.0
+certbot-dns-cloudflare==5.8.0
+certbot-dns-digitalocean==5.8.0
+certbot-dns-dnsimple==5.8.0
+certbot-dns-dnsmadeeasy==5.8.0
+certbot-dns-gehirn==5.8.0
+certbot-dns-google==5.8.0
+certbot-dns-linode==5.8.0
+certbot-dns-luadns==5.8.0
+certbot-dns-nsone==5.8.0
+certbot-dns-ovh==5.8.0
+certbot-dns-rfc2136==5.8.0
+certbot-dns-route53==5.8.0
+certbot-dns-sakuracloud==5.8.0

@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}{{ cert.name }} · certproxy{% endblock %}
+{% block content %}
+<h1>{{ cert.name }}</h1>
+<dl class="card">
+  <dt>Domains</dt><dd>{{ cert.domains }}</dd>
+  <dt>Expires</dt><dd>{{ cert.not_after }} ({{ cert.days_left }} days)</dd>
+  <dt>Vault path</dt><dd><code>{{ cert.vault_path }}</code> (version {{ cert.version }})</dd>
+  <dt>Serial</dt><dd><code>{{ cert.serial }}</code></dd>
+  <dt>Issuer</dt><dd>{{ cert.issuer }}</dd>
+</dl>
+<form method="post" action="/certs/{{ cert.name }}/renew">
+  {% if let Some(n) = nav %}<input type="hidden" name="csrf" value="{{ n.csrf }}">{% endif %}
+  <button type="submit">Renew now</button>
+</form>
+<h2>Jobs</h2>
+{% include "jobs_table.html" %}
+{% endblock %}

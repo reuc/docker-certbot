@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Audit log · certproxy{% endblock %}
+{% block content %}
+<h1>Audit log</h1>
+<table>
+  <thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Target</th><th>Result</th><th>IP</th><th>Detail</th></tr></thead>
+  <tbody>
+  {% for e in entries %}
+  <tr>
+    <td>{{ e.ts }}</td><td>{{ e.actor }}</td><td>{{ e.action }}</td><td>{{ e.target }}</td>
+    <td class="result-{{ e.result }}">{{ e.result }}</td><td>{{ e.ip }}</td><td>{{ e.detail }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

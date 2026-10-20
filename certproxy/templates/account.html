@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Account · certproxy{% endblock %}
+{% block content %}
+<h1>Account</h1>
+<p class="muted">Unused recovery codes: {{ recovery_left }}. To get new ones (or a new authenticator), use "Re-enrollment link" on the Admins page.</p>
+<section class="card narrow">
+  <h2>Change password</h2>
+  {% if let Some(e) = error %}<p class="error">{{ e }}</p>{% endif %}
+  {% if let Some(m) = message %}<p class="ok">{{ m }}</p>{% endif %}
+  <form method="post" action="/account/password">
+    {% if let Some(n) = nav %}<input type="hidden" name="csrf" value="{{ n.csrf }}">{% endif %}
+    <label>Current password <input name="current" type="password" autocomplete="current-password" required></label>
+    <label>New password (min 12 characters) <input name="new" type="password" autocomplete="new-password" required minlength="12"></label>
+    <label>Confirm new password <input name="confirm" type="password" autocomplete="new-password" required minlength="12"></label>
+    <button type="submit">Change password</button>
+  </form>
+</section>
+{% endblock %}
