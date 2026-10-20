@@ -56,9 +56,24 @@ jobs:
       - name: Snyk Code test
         run: snyk code test --sarif > snyk-code.sarif # || true
 
+        # Snyk resolves a pip requirements.txt from the installed environment,
+        # not from its pins. Without this, it reports the runner's system
+        # Python packages instead of what the Certbot image ships. Install the
+        # hash-locked requirements the same way Dockerfile.certbot does.
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Install Certbot's locked requirements
+        run: |
+          python -m venv .snyk-venv
+          .snyk-venv/bin/pip install --require-hashes --only-binary=:all: --no-deps -r certbot/requirements.txt
+          .snyk-venv/bin/pip check
+
         # Runs Snyk Open Source (SCA) analysis and uploads result to Snyk.
       - name: Snyk Open Source monitor
-        run: snyk monitor --all-projects
+        run: snyk monitor --all-projects --command=.snyk-venv/bin/python --exclude=.snyk-venv
 
         # Runs Snyk Infrastructure as Code (IaC) analysis and uploads result to Snyk.
         # Use || true to not fail the pipeline.
