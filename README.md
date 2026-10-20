@@ -102,6 +102,45 @@ grype reads every PyPI package in the virtualenv, so the CVE gate covers them. I
 
 `certproxy` lets apps get TLS certificates without each holding DNS credentials or an ACME account. It's a small Rust service (`certproxy/`) built into `wolfi-certproxy:<date>` by `Dockerfile.certproxy`.
 
+### What's in certproxy
+
+- **The API for apps:**
+  - An app sends its own Vault token with a list of domains.
+  - certproxy asks Vault whether that token has `update` on `cert-requests/<domain>` for every domain, so you grant access with ordinary Vault policies.
+  - It issues the certificate with acme.sh over Cloudflare DNS-01 and writes certificate, key and chain to `secret/data/certs/<name>`.
+  - The app reads the certificate from Vault. The API never returns private keys.
+- **Renewal:** a background loop renews certificates automatically, with a new key each time.
+- **The web UI** uses local accounts: password, then a TOTP code or a one-time recovery code. Admins see certificates, jobs and the audit log, and can renew certificates, manage admins and change passwords. Five failed attempts lock an account for 15 minutes. You create the first admin with `certproxy admin create`.
+- **The image** runs as UID 65532 with no package manager. It keeps busybox because acme.sh is a shell script, so it can't be distroless like the Certbot image.
+- **Secrets stay in Vault.** The Cloudflare token and the key that encrypts TOTP secrets are read from Vault at runtime. After each run, certproxy deletes the certificate's key from disk and strips the credentials acme.sh saves.
+- **Deployment and tests:** a Docker Compose deployment, Vault policies with a setup script, a smoke test and an end-to-end test. New Makefile targets, and two CI changes: certproxy added on amd64 and arm64, plus a `certproxy checks` job.
+
+### Testing done without Docker
+
+- rustfmt and clippy are clean, and all 28 unit and HTTP tests pass.
+- The binary was run against a real Vault 2.2.0 dev server, Pebble 2.10.1 (Let's Encrypt's test CA) and acme.sh 3.1.6, the version Wolfi ships. All 15 checks passed on 8 consecutive runs. They cover:
+  - token and permission errors
+  - issuance, and that only the right app can read the certificate
+  - that nothing secret is left on disk
+  - TOTP login
+  - renewal from the UI with a new key
+  - the audit log
+- That testing caught a real bug. A fixed 30-day renewal window would reissue Let's Encrypt's 6-day certificates every 12 hours. Renewal is now due at 30 days or a third of the certificate's lifetime, whichever is shorter.
+
+### Additions beyond the original request
+
+- **`codeql.yml`:** `rust` was added to its languages so code scanning covers the new code.
+- **`ACME_HOOKS_DIR`:** a new setting that lets you add custom acme.sh DNS hook scripts. The end-to-end test needed it.
+- **Domains:** wildcards are stored and authorized as `wildcard.example.com`, because `*` is a glob character in Vault policies.
+
+### Before you use it
+
+- `setup.sh` writes the AppRole credential files. Run it as root, or `chown 65532:65532` those files afterwards; it tells you when.
+- Start with `ACME_SERVER=letsencrypt_test` (Let's Encrypt staging), then switch to `letsencrypt`.
+- Run one replica only when you move to Kubernetes, because the job queue, database and ACME account can't be shared.
+
+### How it works
+
 ```
  app ──(1) Vault login──────────────────────────► Vault (vault.netseclabs.com)
   │                                                  ▲   ▲
