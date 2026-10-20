@@ -70,8 +70,13 @@ jobs:
           snyk monitor --file=certbot/requirements.txt --package-manager=pip \
             --command="$VIRTUAL_ENV/bin/python"
 
+      # Exit 3 means no IaC files were found (the repo has no Terraform,
+      # Kubernetes or CloudFormation); treat that as nothing to scan.
       - name: Snyk Infrastructure as Code (IaC) test and report
-        run: snyk iac test --report
+        run: |
+          rc=0; snyk iac test --report || rc=$?
+          [ "$rc" -eq 3 ] && { echo "No IaC files found; nothing to scan."; exit 0; }
+          exit "$rc"
 
       - name: Build a Docker image
         run: docker build -t your/image-to-test .
