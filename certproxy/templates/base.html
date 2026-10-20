@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}certproxy{% endblock %}</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header>
+  <a class="brand" href="/">certproxy</a>
+  {% if let Some(n) = nav %}
+  <nav>
+    <a href="/">Certificates</a>
+    <a href="/jobs">Jobs</a>
+    <a href="/audit">Audit log</a>
+    <a href="/admins">Admins</a>
+    <a href="/account">{{ n.username }}</a>
+    <form method="post" action="/logout" class="inline">
+      <input type="hidden" name="csrf" value="{{ n.csrf }}">
+      <button type="submit" class="link">Sign out</button>
+    </form>
+  </nav>
+  {% endif %}
+</header>
+<main>
+{% block content %}{% endblock %}
+</main>
+</body>
+</html>
