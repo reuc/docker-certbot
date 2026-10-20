@@ -173,7 +173,7 @@ jobs:
 
       - name: Install cosign
         if: env.PUBLISH == 'true'
-        uses: sigstore/cosign-installer@v4
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2 (no floating major tag)
 
       - name: Sign ${{ matrix.arch }} image
         if: env.PUBLISH == 'true'
@@ -229,7 +229,7 @@ jobs:
           docker buildx imagetools inspect "$repo:sha-$SHORT"
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@v4
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2 (no floating major tag)
 
       - name: Sign multi-arch image
         env:
