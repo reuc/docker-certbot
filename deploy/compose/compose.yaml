@@ -1,0 +1,72 @@
+# certproxy with Docker Compose.
+#
+# First launch (there is no default account or password):
+#   1. Run deploy/vault/setup.sh against your Vault (writes ./secrets/*).
+#   2. cp .env.example .env and adjust (set PUBLIC_URL or PUBLIC_HOSTNAME so
+#      enrollment links are complete URLs).
+#   3. docker compose up -d
+#   4. certproxy finds no admin and writes a one-time enrollment link (valid
+#      30 minutes, replaced automatically if unused) to Vault; the log shows
+#      only the path. Read it with a token allowed by
+#      deploy/vault/bootstrap-reader-policy.example.hcl:
+#        vault kv get -field=enrollment_url secret/certproxy/bootstrap
+#   5. Open the link, choose a username and password, scan the QR code with an
+#      authenticator app, confirm one code, and store the recovery codes
+#      offline. certproxy then deletes the link from Vault. Invite other admins
+#      from the web UI (Admins), which also uses one-time links.
+#
+# After first launch, secure the deployment:
+#   - check `vault kv get secret/certproxy/bootstrap` now fails, and revoke any
+#     token created just to read it
+#   - switch ACME_SERVER from letsencrypt_test to letsencrypt
+#   - keep TLS_MODE=self or files (none only behind a TLS-terminating proxy)
+#   - bind the AppRole secret_id/tokens to this host and rotate the secret_id
+#     (see deploy/vault/setup.sh)
+#   - restrict `docker exec` and access to the certproxy-data volume, and
+#     restrict who can reach the web UI while apps can still reach the API
+#   - invite a second admin for break-glass access and review the audit log
+# If every admin is locked out:
+#   docker compose exec certproxy certproxy admin invite <username> --reset
+# writes a new one-time link to the same Vault path (nothing is printed).
+name: certproxy
+
+services:
+  certproxy:
+    image: ${CERTPROXY_IMAGE:-wolfi-certproxy:latest}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      VAULT_AUTH: approle
+      VAULT_ROLE_ID_FILE: /run/secrets/vault_role_id
+      VAULT_SECRET_ID_FILE: /run/secrets/vault_secret_id
+      DATA_DIR: /data
+    secrets:
+      - vault_role_id
+      - vault_secret_id
+    ports:
+      - "${CERTPROXY_PORT:-8443}:8443"
+    volumes:
+      - certproxy-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "8443"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+secrets:
+  vault_role_id:
+    file: ./secrets/vault_role_id
+  vault_secret_id:
+    file: ./secrets/vault_secret_id
+
+volumes:
+  # Holds the ACME account, the SQLite database and (TLS_MODE=self) the UI
+  # certificate. Certificate keys for apps are kept only in Vault.
+  certproxy-data:

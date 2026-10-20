@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Authenticator setup · certproxy{% endblock %}
+{% block content %}
+<section class="card narrow">
+  <h1>Add certproxy to your authenticator</h1>
+  <p class="muted">Step 2 of 2 for <strong>{{ username }}</strong>. Scan the QR code with an authenticator app, then enter the 6-digit code it shows.</p>
+  {% if let Some(e) = error %}<p class="error">{{ e }}</p>{% endif %}
+  <div class="qr">{{ qr_svg|safe }}</div>
+  <details>
+    <summary>Can't scan? Enter the key manually</summary>
+    <p>Secret (base32): <code class="wrap">{{ secret }}</code></p>
+    <p>URI: <code class="wrap">{{ otpauth_url }}</code></p>
+  </details>
+  <form method="post" action="/enroll/{{ token }}/confirm">
+    <label>6-digit code <input name="code" inputmode="numeric" autocomplete="one-time-code" required autofocus pattern="[0-9 ]{6,8}"></label>
+    <button type="submit">Finish</button>
+  </form>
+</section>
+{% endblock %}
