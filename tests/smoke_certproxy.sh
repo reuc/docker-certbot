@@ -1,7 +1,8 @@
 #!/bin/sh
 # Smoke test for the certproxy image, run inside the container:
 #   docker run ... --entrypoint /bin/sh IMAGE -s < tests/smoke_certproxy.sh
-# Needs a writable /data (tmpfs) and loopback networking only.
+# Needs a writable /data (tmpfs) and loopback networking only. Uses curl
+# (an acme.sh dependency); Wolfi's busybox has no wget applet.
 set -u
 failures=0
 check() { # name, then a command
@@ -24,12 +25,13 @@ check "no setuid binaries" sh -c '[ -z "$(find / -xdev -perm -4000 -type f 2>/de
 TLS_MODE=none LISTEN_ADDR=127.0.0.1:8080 VAULT_ADDR=http://127.0.0.1:1 VAULT_AUTH=token \
   VAULT_TOKEN_FILE=/nonexistent certproxy serve >/tmp/serve.log 2>&1 &
 pid=$!
+url=http://127.0.0.1:8080
 i=0
-until wget -q -O /tmp/health http://127.0.0.1:8080/healthz 2>/dev/null || [ $i -ge 20 ]; do sleep 0.5; i=$((i + 1)); done
+until curl -fsS -o /tmp/health "$url/healthz" 2>/dev/null || [ $i -ge 20 ]; do sleep 0.5; i=$((i + 1)); done
 check "/healthz responds" grep -q ok /tmp/health
-check "/readyz is 503 without Vault" sh -c '! wget -q -O- http://127.0.0.1:8080/readyz'
-check "login page renders" sh -c 'wget -q -O- http://127.0.0.1:8080/login | grep -q "Sign in"'
-check "security headers set" sh -c 'wget -S -q -O /dev/null http://127.0.0.1:8080/healthz 2>&1 | grep -qi "content-security-policy"'
+check "/readyz is 503 without Vault" test "$(curl -s -o /dev/null -w '%{http_code}' "$url/readyz")" = 503
+check "login page renders" sh -c "curl -fsS '$url/login' | grep -q 'Sign in'"
+check "security headers set" sh -c "curl -fsS -D - -o /dev/null '$url/healthz' | grep -qi '^content-security-policy:'"
 kill $pid 2>/dev/null
 
 echo
