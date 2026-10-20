@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Verification code · certproxy{% endblock %}
+{% block content %}
+<section class="card narrow">
+  <h1>Verification code</h1>
+  {% if let Some(e) = error %}<p class="error">{{ e }}</p>{% endif %}
+  <form method="post" action="/login/totp">
+    <label>Code from your authenticator app, or a recovery code
+      <input name="code" autocomplete="one-time-code" inputmode="text" required autofocus>
+    </label>
+    <button type="submit">Sign in</button>
+  </form>
+  <p class="muted"><a href="/login">Start over</a></p>
+</section>
+{% endblock %}
