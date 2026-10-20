@@ -1,0 +1,274 @@
+# Build, test and publish the certproxy image to Docker Hub.
+#
+# Publishes docker.io/<DOCKER_USER>/wolfi-certproxy (linux/amd64 + linux/arm64)
+# from the CertBot branch, only after the smoke test, the grype CVE gate and
+# the end-to-end test pass on the exact image that gets pushed. Each
+# architecture image gets an SBOM attestation and a cosign signature; the
+# multi-arch index gets a cosign signature and SLSA build provenance.
+#
+# Tags: latest, YYYYMMDD, sha-<short commit>, and the certproxy version from
+# certproxy/Cargo.toml. Pin deployments by digest.
+#
+# This same file also lives on the default branch (main): GitHub only runs
+# scheduled workflows (and offers "Run workflow") from there. Scheduled and
+# manual runs always check out and build the CertBot branch.
+#
+# Repository settings needed:
+#   DOCKER_USER   Docker Hub user/namespace (a variable or a secret)
+#   DOCKER_TOKEN  Docker Hub access token with Read & Write scope (secret)
+name: publish-certproxy
+
+on:
+  push:
+    branches: [CertBot]
+    paths:
+      - "certproxy/**"
+      - "Dockerfile.certproxy"
+      - "tests/smoke_certproxy.sh"
+      - "tests/e2e/**"
+      - "Makefile"
+      - ".dockerignore"
+      - ".github/workflows/publish-certproxy.yml"
+  schedule:
+    # Daily, after build-and-scan (06:17), so new Wolfi fixes are published.
+    - cron: "23 7 * * *"
+  workflow_dispatch:
+  # Dry run on PRs that change this workflow: gates only, no login or push.
+  pull_request:
+    branches: [CertBot]
+    paths:
+      - ".github/workflows/publish-certproxy.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  # Never cancel a publish midway.
+  group: publish-certproxy
+  cancel-in-progress: false
+
+env:
+  IMAGE: wolfi-certproxy
+  DOCKER_NS: ${{ vars.DOCKER_USER || secrets.DOCKER_USER }}
+  # Scheduled and manual runs (which start from main) build CertBot.
+  SOURCE_REF: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'CertBot' || github.sha }}
+  PUBLISH: ${{ github.event_name != 'pull_request' }}
+
+jobs:
+  gate:
+    name: gate (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write # keyless cosign signing
+      attestations: write # SBOM attestation
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    env:
+      TAG: ci-${{ github.run_id }}
+      PLATFORM: linux/${{ matrix.arch }}
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.SOURCE_REF }}
+          persist-credentials: false
+
+      - name: Source commit
+        id: src
+        run: echo "short=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Install grype
+        id: grype
+        uses: anchore/scan-action/download-grype@v7
+
+      - name: Build
+        # NO_CACHE so every build resolves the latest Wolfi packages.
+        run: .github/scripts/run-annotated.sh "Build certproxy/${ARCH}" make build-certproxy NO_CACHE=1
+
+      - name: Verify image architecture
+        run: |
+          ref=$(make -s image-ref-certproxy)
+          got=$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$ref")
+          echo "$ref is $got"
+          [ "$got" = "linux/${ARCH}" ]
+
+      - name: Smoke test
+        run: .github/scripts/run-annotated.sh "Smoke test certproxy/${ARCH}" make test-certproxy
+
+      - name: CVE gate
+        env:
+          GRYPE: ${{ steps.grype.outputs.cmd }}
+        run: .github/scripts/run-annotated.sh "CVE gate certproxy/${ARCH}" make scan-certproxy GRYPE="$GRYPE"
+
+      - name: End-to-end test (Vault dev server + Pebble)
+        if: matrix.arch == 'amd64'
+        run: .github/scripts/run-annotated.sh "certproxy e2e" make e2e-certproxy
+
+      - name: Upload grype report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: grype-certproxy-${{ matrix.arch }}
+          path: reports/
+          if-no-files-found: ignore
+          retention-days: 30
+
+      # ---- publish the tested per-architecture image (not on pull requests)
+
+      - name: Check Docker Hub settings
+        if: env.PUBLISH == 'true'
+        env:
+          HAS_TOKEN: ${{ secrets.DOCKER_TOKEN != '' }}
+        run: |
+          [ -n "$DOCKER_NS" ] || { echo "::error::Set DOCKER_USER (repository variable or secret)"; exit 1; }
+          [ "$HAS_TOKEN" = true ] || { echo "::error::Set the DOCKER_TOKEN secret (Docker Hub access token, Read & Write)"; exit 1; }
+
+      - name: Log in to Docker Hub
+        if: env.PUBLISH == 'true'
+        uses: docker/login-action@v4
+        with:
+          username: ${{ env.DOCKER_NS }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+
+      - name: Push ${{ matrix.arch }} image
+        id: push
+        if: env.PUBLISH == 'true'
+        env:
+          SHORT: ${{ steps.src.outputs.short }}
+        run: |
+          local_ref=$(make -s image-ref-certproxy)
+          remote="docker.io/${DOCKER_NS}/${IMAGE}:sha-${SHORT}-${ARCH}"
+          docker tag "$local_ref" "$remote"
+          docker push "$remote" | tee push.log
+          digest=$(grep -o 'digest: sha256:[0-9a-f]*' push.log | head -1 | cut -d' ' -f2)
+          [ -n "$digest" ] || { echo "::error::could not read the pushed digest"; exit 1; }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "local_ref=$local_ref" >> "$GITHUB_OUTPUT"
+
+      - name: Generate SBOM
+        if: env.PUBLISH == 'true'
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ steps.push.outputs.local_ref }}
+          format: spdx-json
+          output-file: sbom-${{ matrix.arch }}.spdx.json
+          upload-artifact: false
+
+      - name: Attest SBOM
+        if: env.PUBLISH == 'true'
+        uses: actions/attest@v4
+        with:
+          subject-name: index.docker.io/${{ env.DOCKER_NS }}/${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          sbom-path: sbom-${{ matrix.arch }}.spdx.json
+          push-to-registry: true
+
+      - name: Install cosign
+        if: env.PUBLISH == 'true'
+        uses: sigstore/cosign-installer@v4
+
+      - name: Sign ${{ matrix.arch }} image
+        if: env.PUBLISH == 'true'
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: cosign sign --yes "docker.io/${DOCKER_NS}/${IMAGE}@${DIGEST}"
+
+  publish:
+    name: publish multi-arch image
+    needs: gate
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write # keyless cosign signing
+      attestations: write # build provenance
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.SOURCE_REF }}
+          persist-credentials: false
+
+      - name: Tags
+        id: tags
+        run: |
+          {
+            echo "short=$(git rev-parse --short=7 HEAD)"
+            echo "date=$(date -u +%Y%m%d)"
+            echo "version=$(sed -n 's/^version = "\(.*\)"/\1/p' certproxy/Cargo.toml | head -1)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ env.DOCKER_NS }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+
+      - name: Create multi-arch image
+        id: index
+        env:
+          SHORT: ${{ steps.tags.outputs.short }}
+          DATE: ${{ steps.tags.outputs.date }}
+          VERSION: ${{ steps.tags.outputs.version }}
+        run: |
+          repo="docker.io/${DOCKER_NS}/${IMAGE}"
+          docker buildx imagetools create \
+            -t "$repo:latest" -t "$repo:$DATE" -t "$repo:sha-$SHORT" -t "$repo:$VERSION" \
+            "$repo:sha-$SHORT-amd64" "$repo:sha-$SHORT-arm64"
+          digest=$(docker buildx imagetools inspect "$repo:sha-$SHORT" --format '{{json .Manifest}}' | jq -r .digest)
+          [ -n "$digest" ] && [ "$digest" != null ] || { echo "::error::could not read the index digest"; exit 1; }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          docker buildx imagetools inspect "$repo:sha-$SHORT"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4
+
+      - name: Sign multi-arch image
+        env:
+          DIGEST: ${{ steps.index.outputs.digest }}
+        run: cosign sign --yes "docker.io/${DOCKER_NS}/${IMAGE}@${DIGEST}"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: index.docker.io/${{ env.DOCKER_NS }}/${{ env.IMAGE }}
+          subject-digest: ${{ steps.index.outputs.digest }}
+          push-to-registry: true
+
+      - name: Summary
+        env:
+          DIGEST: ${{ steps.index.outputs.digest }}
+          SHORT: ${{ steps.tags.outputs.short }}
+          DATE: ${{ steps.tags.outputs.date }}
+          VERSION: ${{ steps.tags.outputs.version }}
+          REPO_SLUG: ${{ github.repository }}
+        run: |
+          repo="docker.io/${DOCKER_NS}/${IMAGE}"
+          {
+            echo "### Published ${repo}"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Digest | \`${DIGEST}\` |"
+            echo "| Tags | \`latest\`, \`${DATE}\`, \`sha-${SHORT}\`, \`${VERSION}\` |"
+            echo "| Platforms | linux/amd64, linux/arm64 |"
+            echo "| Source | ${REPO_SLUG}@${SHORT} (CertBot) |"
+            echo
+            echo "Pull by digest: \`docker pull ${repo}@${DIGEST}\`"
+            echo
+            echo "Verify:"
+            echo '```'
+            echo "cosign verify ${repo}@${DIGEST} \\"
+            echo "  --certificate-oidc-issuer https://token.actions.githubusercontent.com \\"
+            echo "  --certificate-identity-regexp '^https://github.com/${REPO_SLUG}/\\.github/workflows/publish-certproxy\\.yml@'"
+            echo "gh attestation verify oci://${repo}@${DIGEST} -R ${REPO_SLUG}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
