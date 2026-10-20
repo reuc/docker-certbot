@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Admins · certproxy{% endblock %}
+{% block content %}
+<h1>Admins</h1>
+{% if let Some(e) = error %}<p class="error">{{ e }}</p>{% endif %}
+<table>
+  <thead><tr><th>Username</th><th>Last sign-in</th><th>Status</th><th></th></tr></thead>
+  <tbody>
+  {% for a in admins %}
+  <tr>
+    <td>{{ a.username }}{% if a.is_self %} (you){% endif %}</td>
+    <td>{{ a.last_login }}</td>
+    <td>{% if a.locked %}<span class="bad">locked</span>{% else %}active{% endif %}</td>
+    <td class="actions">
+      {% if let Some(n) = nav %}
+      <form method="post" action="/admins/{{ a.id }}/reset-totp" class="inline">
+        <input type="hidden" name="csrf" value="{{ n.csrf }}">
+        <button type="submit" class="secondary">Reset TOTP</button>
+      </form>
+      {% if !a.is_self %}
+      <form method="post" action="/admins/{{ a.id }}/delete" class="inline">
+        <input type="hidden" name="csrf" value="{{ n.csrf }}">
+        <button type="submit" class="danger">Delete</button>
+      </form>
+      {% endif %}
+      {% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+<section class="card narrow">
+  <h2>Add an admin</h2>
+  <form method="post" action="/admins">
+    {% if let Some(n) = nav %}<input type="hidden" name="csrf" value="{{ n.csrf }}">{% endif %}
+    <label>Username <input name="username" required pattern="[a-z0-9._-]{1,64}"></label>
+    <label>Initial password (min 12 characters) <input name="password" type="password" autocomplete="new-password" required minlength="12"></label>
+    <button type="submit">Create</button>
+  </form>
+</section>
+{% endblock %}

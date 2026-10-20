@@ -6,6 +6,7 @@ Hardened container images built on [Wolfi](https://github.com/wolfi-dev):
 
 - **Toolchain images** (`wolfi-polyglot`), in a shell variant and a distroless variant. See [Variants](#variants).
 - **Certbot image** (`wolfi-certbot`): Certbot with every official DNS plugin, distroless. See [Certbot image](#certbot-image).
+- **certproxy** (`wolfi-certproxy`): a certificate proxy for apps. Apps authorized by Vault policy request certificates, certproxy issues them with acme.sh (Cloudflare DNS-01) and stores them in Vault, and admins use a web UI with password + TOTP. See [certproxy](#certproxy).
 
 Each toolchain image contains:
 
@@ -97,6 +98,129 @@ The daily CI rebuild refreshes Wolfi's packages (including Python itself), but *
 
 grype reads every PyPI package in the virtualenv, so the CVE gate covers them. It can't see libraries bundled inside binary wheels, though. For example, the `cryptography` wheel includes its own OpenSSL, so a CVE in that OpenSSL is fixed by upgrading `cryptography` through the lock file, not by rebuilding.
 
+## certproxy
+
+`certproxy` lets apps get TLS certificates without each holding DNS credentials or an ACME account. It's a small Rust service (`certproxy/`) built into `wolfi-certproxy:<date>` by `Dockerfile.certproxy`.
+
+```
+ app ──(1) Vault login──────────────────────────► Vault (vault.netseclabs.com)
+  │                                                  ▲   ▲
+  ├──(2) POST /api/v1/certificates ──► certproxy ────┘   │ (3) checks the app's token,
+  │       X-Vault-Token: <app token>      │              │     stores the cert (KV v2)
+  │                                       └─ acme.sh ──► Let's Encrypt (DNS-01 via Cloudflare)
+  └──(4) read secret/data/certs/<name> ─────────────────┘
+```
+
+1. The app logs in to Vault with its own identity (AppRole, Kubernetes, JWT…).
+2. It asks certproxy for a certificate, sending its Vault token.
+3. certproxy checks the token with Vault. The app may request a domain only if its token has **`update` on `cert-requests/<domain>`**. That path is policy-only (no mount needed), so access is managed entirely with Vault policies. certproxy then issues the certificate with acme.sh and writes it to **`secret/data/certs/<name>`**.
+4. The app reads the certificate and key **directly from Vault** with its own policy. certproxy's API never returns private keys.
+
+Certificates renew automatically when less than `RENEW_BEFORE_DAYS` (30) or a third of their lifetime remains, whichever is shorter, and each renewal writes a new KV version with a **new key**. Wildcards are supported (`*.example.com` is stored, and authorized, as `wildcard.example.com`).
+
+### Vault setup
+
+```bash
+export VAULT_ADDR=https://vault.netseclabs.com VAULT_TOKEN=<admin token>
+CF_TOKEN=<Cloudflare API token with Zone:DNS:Edit> ./deploy/vault/setup.sh
+```
+
+This creates the `certproxy` policy (`deploy/vault/certproxy-policy.hcl`) and AppRole role, stores the Cloudflare token at `secret/certproxy/dns` and a TOTP encryption key at `secret/certproxy/app`, and writes the AppRole credentials to `deploy/compose/secrets/`. Run it as root, or `sudo chown 65532:65532` the two files afterwards as it tells you: the container runs as UID 65532.
+
+Grant each app a policy like `deploy/vault/app-policy.example.hcl`:
+
+```hcl
+path "cert-requests/app.example.com"    { capabilities = ["update"] }  # may request
+path "secret/data/certs/app.example.com" { capabilities = ["read"] }    # may read the result
+```
+
+### Requesting a certificate (app side)
+
+```bash
+TOKEN=$(vault write -field=token auth/approle/login role_id=... secret_id=...)
+curl -sS -H "X-Vault-Token: $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"domains":["app.example.com","www.app.example.com"]}' \
+  https://certproxy.netseclabs.com/api/v1/certificates
+# 202 {"status":"queued","job_id":"..."}  or  200 {"status":"exists","certificate":{...}}
+
+curl -sS -H "X-Vault-Token: $TOKEN" https://certproxy.netseclabs.com/api/v1/jobs/<job_id>
+# {"status":"succeeded","vault_path":"secret/data/certs/app.example.com","vault_version":1,...}
+
+vault kv get -field=fullchain   secret/certs/app.example.com > fullchain.pem
+vault kv get -field=private_key secret/certs/app.example.com > key.pem
+```
+
+| Endpoint | |
+|---|---|
+| `POST /api/v1/certificates` | `{"domains": [...]}`. Returns 202 with a job, or 200 if a valid certificate with the same names exists. 401 for a bad token, 403 (listing the denied domains) without permission, 429 over `RATE_LIMIT_PER_HOUR`. |
+| `GET /api/v1/jobs/{id}` | Job status; apps only see their own jobs. |
+| `GET /api/v1/certificates/{domain}` | Metadata (expiry, serial, Vault path and version). Never the key. |
+| `GET /healthz`, `GET /readyz` | Liveness, and readiness (logged in to Vault, secrets loaded). |
+
+The KV secret has the fields `certificate`, `private_key`, `chain`, `fullchain`, `domains`, `not_before`, `not_after`, `serial` and `issuer`.
+
+### Web UI
+
+Admins sign in at `https://<host>:8443/` with a **username and password, then a TOTP code** from an authenticator app (or a one-time recovery code). The UI shows certificates and expiry, jobs, and the audit log. Admins can renew a certificate, manage other admins, reset TOTP and change their password. It never shows private keys.
+
+Create the first admin with the CLI, which reads the password from stdin and prints the TOTP enrollment URI and 10 recovery codes:
+
+```bash
+docker compose exec certproxy certproxy admin create alice
+```
+
+Passwords are hashed with Argon2id and must be at least 12 characters. TOTP secrets are encrypted with AES-256-GCM using the key from Vault, and each code is accepted only once. Five failed attempts lock an account for 15 minutes. Sessions use random tokens (stored hashed) in `HttpOnly`, `SameSite=Strict`, `Secure` cookies, and every form carries a CSRF token. A strict Content-Security-Policy is applied and the UI uses no JavaScript.
+
+### Running it
+
+```bash
+cd deploy/compose
+cp .env.example .env        # VAULT_ADDR, ACME_SERVER, PUBLIC_HOSTNAME, ...
+docker compose up -d
+```
+
+The Compose service runs read-only, with all capabilities dropped and `no-new-privileges`. With `TLS_MODE=self` (the default in `.env.example`), certproxy issues and renews the UI's own certificate for `PUBLIC_HOSTNAME`. Use `TLS_MODE=files` for your own certificate, or `TLS_MODE=none` only behind a TLS-terminating proxy. **Start with `ACME_SERVER=letsencrypt_test`** (Let's Encrypt staging) and switch to `letsencrypt` once it works.
+
+| Variable | Default | |
+|---|---|---|
+| `VAULT_ADDR` | `https://vault.netseclabs.com` | Vault URL (`VAULT_NAMESPACE`, `VAULT_CACERT` optional) |
+| `VAULT_AUTH` | `approle` | `approle` (`VAULT_ROLE_ID_FILE`, `VAULT_SECRET_ID_FILE`), `kubernetes` (`VAULT_K8S_ROLE`), or `token` (`VAULT_TOKEN_FILE`, dev only) |
+| `KV_MOUNT` / `KV_CERTS_PREFIX` | `secret` / `certs` | Where certificates are stored |
+| `REQUEST_MARKER_PREFIX` | `cert-requests` | Policy path checked for authorization |
+| `ACME_SERVER` | `letsencrypt` | acme.sh server name or directory URL |
+| `ACME_EMAIL` | | ACME account email |
+| `ACME_DNS_PROVIDER` | `dns_cf` | acme.sh DNS hook. Its credentials are read from `secret/certproxy/dns` and passed as env vars, so any acme.sh provider works. |
+| `ACME_HOOKS_DIR` | | Optional directory of extra `dns_*.sh` hook scripts |
+| `TLS_MODE` | `files` | `self` (with `PUBLIC_HOSTNAME`), `files` (`TLS_CERT_FILE`, `TLS_KEY_FILE`) or `none` |
+| `RENEW_BEFORE_DAYS` | `30` | Renewal window (capped at a third of the lifetime) |
+| `RATE_LIMIT_PER_HOUR` | `20` | Requests per app identity per hour |
+| `SESSION_HOURS` | `8` | Admin session lifetime |
+| `LOG_FORMAT` | | `json` for JSON logs |
+
+### Security notes
+
+- **Secrets stay in Vault.** The Cloudflare token and the TOTP key never go into env files or the image. acme.sh runs with a clean environment that only gets the DNS credentials. After every run certproxy deletes the domain's key directory and strips acme.sh's `SAVED_*` credential lines, so **`/data` holds only the ACME account key, the SQLite database and (in `self` mode) the UI certificate.**
+- **App tokens are never stored or logged.** They're only used for `lookup-self` and `capabilities-self`.
+- **Everything is audited.** Every request (allowed, denied, rate-limited) and every admin action goes to the audit log, with identity and source IP, and to the container log.
+- **Why this image has a shell.** acme.sh is a shell script, so the image includes busybox. It still has no package manager, no setuid binaries and runs as UID 65532.
+- **CVE coverage.** The binary is built with `cargo auditable`, so grype scans the Rust crates inside it as well as the Wolfi packages.
+
+### Kubernetes
+
+The service is ready to move. Configuration is all env vars, state lives only in `/data` (use a PVC), `VAULT_AUTH=kubernetes` uses the pod's service-account token, and `/healthz` and `/readyz` work as probes. Run **one replica**, because the job queue, SQLite and the ACME account are single-writer. Manifests will come in a later change.
+
+### Testing
+
+`make test-certproxy-unit` runs rustfmt, clippy and the unit tests in Docker. `make e2e-certproxy` runs the image against a **Vault dev server and Pebble** (Let's Encrypt's test CA) with a no-op DNS hook. It checks:
+
+- authorization: a bad token gets 401, missing permission or partial permission gets 403
+- issuance, and that the app can read the certificate and matching key from Vault while other apps can't
+- certificate reuse, and that the API returns no key material
+- that no keys or credentials are left on disk
+- CLI admin creation, then password + TOTP login and the dashboard
+- a renewal from the UI, which must produce a new key
+- the audit log
+
 ## Requirements
 
 - Docker with BuildKit (Docker 23+ has it on by default)
@@ -120,11 +244,13 @@ make help       # list all targets
 |--------|--------------|
 | `all` (default) | `build` + `test` + `scan` |
 | `build` | Builds all images |
-| `build-shell` / `build-distroless` / `build-certbot` | Builds one image |
+| `build-shell` / `build-distroless` / `build-certbot` / `build-certproxy` | Builds one image |
 | `test` | Smoke-tests all images |
-| `test-shell` / `test-distroless` / `test-certbot` | Smoke-tests one image |
+| `test-shell` / `test-distroless` / `test-certbot` / `test-certproxy` | Smoke-tests one image |
+| `test-certproxy-unit` | certproxy: rustfmt, clippy and unit tests (in Docker) |
+| `e2e-certproxy` | certproxy end-to-end test against Vault dev + Pebble |
 | `scan` | Runs the CVE gate on all images |
-| `scan-shell` / `scan-distroless` / `scan-certbot` | Runs the CVE gate on one image |
+| `scan-shell` / `scan-distroless` / `scan-certbot` / `scan-certproxy` | Runs the CVE gate on one image |
 | `certbot-lock` | Regenerates `certbot/requirements.txt` from `certbot/requirements.in` (needs uv) |
 | `sbom` | Writes SPDX JSON SBOMs to `reports/` |
 | `clean` | Removes the built images and `reports/` |
@@ -137,6 +263,7 @@ Override any variable on the command line, for example `make build TAG=v1 PLATFO
 |----------|---------|-------------|
 | `IMAGE` | `wolfi-polyglot` | Toolchain image repository name |
 | `CERTBOT_IMAGE_NAME` | `wolfi-certbot` | Certbot image repository name |
+| `CERTPROXY_IMAGE_NAME` | `wolfi-certproxy` | certproxy image repository name |
 | `TAG` | today's date (`YYYYMMDD`) | Tag for the shell variant and the Certbot image; the distroless variant adds `-distroless` |
 | `PLATFORM` | `linux/amd64` | Target platform (`linux/arm64` also works) |
 | `BASE_IMAGE` | `cgr.dev/chainguard/wolfi-base:latest` | Builder base image. Pin it by digest for reproducible builds. |
@@ -232,7 +359,7 @@ docker run --rm \
 5. **Non-root by default.** Both images run as UID/GID 65532.
 6. **No setuid or setgid binaries.** These bits are removed from every file.
 7. **The scanners still see everything.** The installed-package list (`/lib/apk/db/installed`) is kept on purpose, so grype, trivy and syft can identify every package. Removing it would hide CVEs, not fix them.
-8. **Minimal build context.** `.dockerignore` excludes everything except `certbot/requirements.txt`, so no other local files can leak into an image.
+8. **Minimal build context.** `.dockerignore` excludes everything except `certbot/requirements.txt` and certproxy's sources, so no other local files can leak into an image.
 
 ## CVE gate
 
@@ -270,13 +397,14 @@ Grype uses the Wolfi security database, so it already ignores CVEs that Wolfi ha
 
 ## Continuous integration
 
-`.github/workflows/build-and-scan.yml` builds, smoke-tests and CVE-gates **every image on every architecture**, six jobs in all:
+`.github/workflows/build-and-scan.yml` builds, smoke-tests and CVE-gates **every image on every architecture**, eight jobs in all:
 
 | | `amd64` (runner `ubuntu-24.04`) | `arm64` (runner `ubuntu-24.04-arm`) |
 |---|---|---|
 | `shell` | ✓ | ✓ |
 | `distroless` | ✓ | ✓ |
 | `certbot` | ✓ | ✓ |
+| `certproxy` | ✓ | ✓ |
 
 Each job builds natively on its own architecture's runner, with no QEMU emulation. It runs `make build-<variant>`, checks that the image's architecture matches the job, then runs `make test-<variant>` and `make scan-<variant>`, with `PLATFORM=linux/<arch>`.
 
@@ -291,7 +419,7 @@ Builds always use `NO_CACHE=1` so they pick up the latest Wolfi packages. A job 
 
 The workflow only builds and scans. It doesn't publish images.
 
-To make the gate block merges, add **`build-and-scan (all)`** as a required status check in the branch protection rule for `main`. That one check passes only when all six jobs pass.
+To make the gate block merges, add **`build-and-scan (all)`** as a required status check in the branch protection rule for `main`. That one check passes only when all eight jobs pass, plus the `certproxy checks` job (rustfmt, clippy, unit tests and the end-to-end test), which runs on pull requests and pushes but not on the daily schedule.
 
 ## Smoke tests
 
@@ -322,16 +450,23 @@ The tests run with `--network=none`, a read-only root filesystem and all capabil
 ```
 .
 ├── .github/workflows/
-│   └── build-and-scan.yml # CI: build, test, CVE gate
+│   ├── build-and-scan.yml # CI: build, test, CVE gate
+│   └── codeql.yml         # CodeQL (actions, python, rust)
 ├── Dockerfile             # shell variant
 ├── Dockerfile.distroless  # no-shell variant
 ├── Dockerfile.certbot     # Certbot + all DNS plugins (distroless)
+├── Dockerfile.certproxy   # certproxy (Rust build, acme.sh runtime)
+├── certproxy/             # certproxy source (Cargo.toml, Cargo.lock, src/, templates/, static/)
+├── deploy/compose/        # Docker Compose deployment for certproxy
+├── deploy/vault/          # Vault policies and setup script for certproxy
 ├── certbot/
 │   ├── requirements.in    # Certbot + plugin versions (edit this)
 │   └── requirements.txt   # hash-locked lock file (make certbot-lock)
 ├── Makefile               # build / test / scan / sbom / certbot-lock
 ├── tests/smoke.py         # toolchain smoke test
 ├── tests/smoke_certbot.py # Certbot smoke test
-├── .dockerignore          # build context: only the Certbot lock file
+├── tests/smoke_certproxy.sh # certproxy smoke test
+├── tests/e2e/             # certproxy end-to-end test (Vault dev + Pebble)
+├── .dockerignore          # build context: only the Certbot lock file and certproxy sources
 └── README.md
 ```

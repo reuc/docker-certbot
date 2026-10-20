@@ -1,0 +1,93 @@
+# syntax=docker/dockerfile:1
+#
+# certproxy: acme.sh certificate proxy with Vault storage and an admin UI.
+# Non-root, no package manager. Keeps busybox because acme.sh is a shell
+# script (so this image can't be distroless like the Certbot one).
+#
+# Stages:
+#   toolchain  Wolfi Rust + cargo-auditable, sources copied in
+#   test       cargo fmt --check, clippy -D warnings, unit tests
+#              (docker build --target test)
+#   build      cargo auditable build --locked --release (embeds the crate list
+#              so grype can scan the Rust dependencies inside the binary)
+#   rootfs     minimal Wolfi rootfs with acme.sh, assembled with apk --root
+#   final      FROM scratch
+
+ARG BASE_IMAGE=cgr.dev/chainguard/wolfi-base:latest
+
+FROM ${BASE_IMAGE} AS toolchain
+ARG APK_CACHE_BUST=0
+RUN set -eux; \
+    echo "cache-bust: ${APK_CACHE_BUST}"; \
+    apk add --no-cache rust cargo-auditable gcc glibc-dev
+WORKDIR /src
+COPY certproxy/Cargo.toml certproxy/Cargo.lock ./
+COPY certproxy/src ./src
+COPY certproxy/templates ./templates
+COPY certproxy/static ./static
+
+FROM toolchain AS test
+RUN cargo fmt --check \
+ && cargo clippy --locked --all-targets -- -D warnings \
+ && cargo test --locked
+
+FROM toolchain AS build
+RUN cargo auditable build --locked --release \
+ && install -D -m 0755 target/release/certproxy /out/certproxy
+
+FROM ${BASE_IMAGE} AS rootfs
+ARG APK_CACHE_BUST=0
+RUN set -eux; \
+    echo "cache-bust: ${APK_CACHE_BUST}"; \
+    mkdir -p /rootfs; \
+    apk add --no-cache --no-scripts --initdb --root /rootfs \
+        --keys-dir /etc/apk/keys \
+        --repositories-file /etc/apk/repositories \
+        wolfi-baselayout \
+        ca-certificates-bundle \
+        glibc \
+        glibc-locale-posix \
+        libgcc \
+        tzdata \
+        busybox \
+        acme.sh; \
+    # --no-scripts skips busybox's applet-link trigger, so create the links here.
+    chroot /rootfs /bin/busybox --install -s; \
+    # acme.sh's runtime dependencies must be present.
+    for b in /usr/bin/acme.sh /usr/bin/curl /usr/bin/openssl /bin/sh /usr/bin/env; do \
+        [ -e "/rootfs$b" ] || { echo "ERROR: $b missing"; exit 1; }; \
+    done; \
+    for f in /sbin/apk /usr/bin/apk; do \
+        [ ! -e "/rootfs$f" ] || { echo "ERROR: $f present"; exit 1; }; \
+    done; \
+    grep -q '^nonroot:' /rootfs/etc/passwd || \
+        echo 'nonroot:x:65532:65532:nonroot:/home/nonroot:/sbin/nologin' >> /rootfs/etc/passwd; \
+    grep -q '^nonroot:' /rootfs/etc/group || \
+        echo 'nonroot:x:65532:' >> /rootfs/etc/group; \
+    mkdir -p /rootfs/home/nonroot /rootfs/tmp /rootfs/data; \
+    chown 65532:65532 /rootfs/home/nonroot /rootfs/data; \
+    chmod 0700 /rootfs/data; \
+    chmod 0750 /rootfs/home/nonroot; \
+    chmod 1777 /rootfs/tmp; \
+    find /rootfs -xdev -type f -perm /6000 -exec chmod a-s {} +; \
+    rm -rf /rootfs/var/cache/apk/* /rootfs/etc/apk/keys /rootfs/root/.cache
+
+FROM scratch
+
+COPY --from=rootfs /rootfs/ /
+COPY --from=build /out/certproxy /usr/bin/certproxy
+
+ENV PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+    HOME=/home/nonroot \
+    LANG=C.UTF-8 \
+    SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+    DATA_DIR=/data \
+    ACME_SH=/usr/bin/acme.sh \
+    LISTEN_ADDR=0.0.0.0:8443
+
+USER 65532:65532
+WORKDIR /home/nonroot
+EXPOSE 8443
+
+ENTRYPOINT ["/usr/bin/certproxy"]
+CMD ["serve"]

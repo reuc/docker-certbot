@@ -1,0 +1,48 @@
+# certproxy with Docker Compose.
+#
+#   1. Run deploy/vault/setup.sh against your Vault (writes ./secrets/*).
+#   2. cp .env.example .env and adjust.
+#   3. docker compose up -d
+#   4. docker compose exec certproxy certproxy admin create <username>
+name: certproxy
+
+services:
+  certproxy:
+    image: ${CERTPROXY_IMAGE:-wolfi-certproxy:latest}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      VAULT_AUTH: approle
+      VAULT_ROLE_ID_FILE: /run/secrets/vault_role_id
+      VAULT_SECRET_ID_FILE: /run/secrets/vault_secret_id
+      DATA_DIR: /data
+    secrets:
+      - vault_role_id
+      - vault_secret_id
+    ports:
+      - "${CERTPROXY_PORT:-8443}:8443"
+    volumes:
+      - certproxy-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "8443"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+secrets:
+  vault_role_id:
+    file: ./secrets/vault_role_id
+  vault_secret_id:
+    file: ./secrets/vault_secret_id
+
+volumes:
+  # Holds the ACME account, the SQLite database and (TLS_MODE=self) the UI
+  # certificate. Certificate keys for apps are kept only in Vault.
+  certproxy-data:
