@@ -53,12 +53,17 @@ RUN set -eux; \
         acme.sh; \
     # --no-scripts skips busybox's applet-link trigger, so create the links here.
     chroot /rootfs /bin/busybox --install -s; \
-    # acme.sh's runtime dependencies must be present.
+    # acme.sh and its runtime dependencies must be present. Several of these
+    # are absolute symlinks (e.g. /usr/bin/acme.sh -> /usr/share/acme.sh/acme.sh)
+    # that only resolve inside the rootfs, so accept links and check targets.
     for b in /usr/bin/acme.sh /usr/bin/curl /usr/bin/openssl /bin/sh /usr/bin/env; do \
-        [ -e "/rootfs$b" ] || { echo "ERROR: $b missing"; exit 1; }; \
+        [ -e "/rootfs$b" ] || [ -L "/rootfs$b" ] || { echo "ERROR: $b missing"; exit 1; }; \
+    done; \
+    for f in /usr/share/acme.sh/acme.sh /usr/share/acme.sh/dnsapi/dns_cf.sh; do \
+        [ -f "/rootfs$f" ] || { echo "ERROR: $f missing"; exit 1; }; \
     done; \
     for f in /sbin/apk /usr/bin/apk; do \
-        [ ! -e "/rootfs$f" ] || { echo "ERROR: $f present"; exit 1; }; \
+        if [ -e "/rootfs$f" ] || [ -L "/rootfs$f" ]; then echo "ERROR: $f present"; exit 1; fi; \
     done; \
     grep -q '^nonroot:' /rootfs/etc/passwd || \
         echo 'nonroot:x:65532:65532:nonroot:/home/nonroot:/sbin/nologin' >> /rootfs/etc/passwd; \
