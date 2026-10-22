@@ -44,7 +44,7 @@ certbot==5.8.0 \
     --hash=sha256:a4a2c7b0459bb626b3791ef07b6df26bbb222d2324783ba3e60f76c0933eec87 \
     --hash=sha256:c06793e6a0169b07ee09e11e6a017c7d5a77310055d693fffd66c53363ab87ff
     # via
-    #   -r certbot/requirements.in
+    #   -r requirements.in
     #   certbot-dns-cloudflare
     #   certbot-dns-digitalocean
     #   certbot-dns-dnsimple
@@ -61,58 +61,58 @@ certbot==5.8.0 \
 certbot-dns-cloudflare==5.8.0 \
     --hash=sha256:372276cb7477af4799cffe22bb1ebb2dd6e9e226d0126117431e3a83866f8e3e \
     --hash=sha256:540870f24a7aa05d9057bfa70cb684094b4106838747e15990f498ef16b7d212
-    # via -r certbot/requirements.in
+    # via -r requirements.in
 certbot-dns-digitalocean==5.8.0 \
     --hash=sha256:5c001d5dd7710d5ef7e56b99261ad17a8b316da8d34a3c16ec3bc4b17203c7ce \
     --hash=sha256:5c08b3a2c9ab097fa7c6122b972920082ae19077dbb374a3f8a121746ee35ee3
-    # via -r certbot/requirements.in
+    # via -r requirements.in
 certbot-dns-dnsimple==5.8.0 \
     --hash=sha256:93a7dd4acf57ec7891bbfbcde02a19adeb8e820e4ed8dd10ffbcd269878c0974 \
     --hash=sha256:e578f2aad22322a48af2768010717f44446a7e6bd3a4b3fc80110b137506f42e
-    # via -r certbot/requirements.in
+    # via -r requirements.in
 certbot-dns-dnsmadeeasy==5.8.0 \
     --hash=sha256:515bba8fad13db2a910d9a0d70a3cd499ba29ebdcf23113c7571e856584c9572 \
     --hash=sha256:6ff6893a5963f44109c3973e23593d9b99c89f211a6af427cca67236b46c2a2e
-    # via -r certbot/requirements.in
+    # via -r requirements.in
 certbot-dns-gehirn==5.8.0 \
     --hash=sha256:73f4f354aa2b223c25368407204ec75852ffc2438f881626b4e720316a62a7b7 \
     --hash=sha256:b2e28ba3be03b95514ab38657eb159e5f1ad6e9f45e60449dfa2186891a97192
-    # via -r certbot/requirements.in
+    # via -r requirements.in
 certbot-dns-google==5.8.0 \
     --hash=sha256:e9fbce5af1d4113ec6971f7597f216c91ce319f3ed7db70d633fb4702f32b625 \
     --hash=sha256:fcff7da84fc86598f83e269609845737631a46a25ce6414a780c708766c400ca
-    # via -r certbot/requirements.in
+    # via -r requirements.in
 certbot-dns-linode==5.8.0 \
     --hash=sha256:6f8d22e530fe68e28d7d612b8acbd85d34c1f9d77e96032cd4821f56cfc6dda9 \
     --hash=sha256:bf3e6d71cbe5500a5fdea8b23f7b5a4008417a10d63d25939242b1adfbec2c95
-    # via -r certbot/requirements.in
+    # via -r requirements.in
 certbot-dns-luadns==5.8.0 \
     --hash=sha256:431a4c477c352dedc0c24a837528e9da059b4ebd53c7e847b00f5f5c101ab7a1 \
     --hash=sha256:e7aeb723c824c1c3685dbfceb63fa7ed5344e99ed3060058de2d4e953b3310a4
-    # via -r certbot/requirements.in
+    # via -r requirements.in
 certbot-dns-nsone==5.8.0 \
     --hash=sha256:7c6b2035a0d01d2ecf44938352828d0d8114289c0e86b08aa83ea2ab8fef71d0 \
     --hash=sha256:dadfac6dad4c4fc5dbbe3b02192e36609efe5bc68709ca04bbeaca64ca7dd79e
-    # via -r certbot/requirements.in
+    # via -r requirements.in
 certbot-dns-ovh==5.8.0 \
     --hash=sha256:da6e4e6e845e676abb23529f165a0237a0a8bb4b19913dfc6a4d36876624f810 \
     --hash=sha256:e97bed7f0e9e299f8afd6cf29668e5e803df3b31ac844e0977e92247f7292734
-    # via -r certbot/requirements.in
+    # via -r requirements.in
 certbot-dns-rfc2136==5.8.0 \
     --hash=sha256:6a2f105b29bc5d79f653d2ea9c4a94d24e2916dbc6294e4f0d8ee7cb8d44041b \
     --hash=sha256:d18c089078c0674e23c1c44675e35c3669c69727b80558f40b402e6c981098e9
-    # via -r certbot/requirements.in
+    # via -r requirements.in
 certbot-dns-route53==5.8.0 \
     --hash=sha256:92f7bd92ccec02dc9a9f37924c15871f2bd768fad65acf5c525933189e8e248a \
     --hash=sha256:de2d294074f7a0c084c708fdc6217474e8196917b0c4f98929fa9de78076e9b6
-    # via -r certbot/requirements.in
+    # via -r requirements.in
 certbot-dns-sakuracloud==5.8.0 \
     --hash=sha256:808e0593eea944478edd0d0945c816fa396f2dc2460ea4e83d3b3566767e78be \
     --hash=sha256:ef8a4432695fab098c500b7f154855d972da9abf965fbc547a8e4824c8295d9e
-    # via -r certbot/requirements.in
-certifi==2026.10.18 \
-    --hash=sha256:73191c47aaa79da394e8fee2dbc2ec827432cab56311122c9e47abf79e390f62 \
-    --hash=sha256:b9995d97b64d0431a5af837d8ca8cd6238104d1f319f04bd93ea43124d6c861e
+    # via -r requirements.in
+certifi==2026.10.19 \
+    --hash=sha256:035c1e85572b141bf1c3a3eff0e33a8eb74917522f2559075ff8d2fea780a1ae \
+    --hash=sha256:42d35340cc5b9ba78e818ddbff0c5b1c2b779de448a340fd1b989f5fa8670e1b
     # via
     #   httpcore
     #   httpx
