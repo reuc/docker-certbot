@@ -43,7 +43,7 @@ jobs:
       - uses: actions/checkout@v7
       
       - name: Set up Snyk CLI to check for security issues
-        uses: snyk/actions/setup@806182742461562b67788a64410098c9d9b96adb
+        uses: snyk/actions/setup@11b673cfb4b0dc0d860a1323caa199d54950dcce
         # (Removed the local env block from here)
 
       - name: Snyk Code test
@@ -54,7 +54,7 @@ jobs:
       # hash-locked requirements into a venv, as Dockerfile.certbot does, and
       # point Snyk at that venv.
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: "3.14"
 
@@ -85,6 +85,6 @@ jobs:
         run: snyk container monitor your/image-to-test --file=Dockerfile
 
       - name: Upload result to GitHub Code Scanning
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: snyk-code.sarif
