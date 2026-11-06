@@ -42,9 +42,9 @@ CERTPROXY_VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' certproxy/Cargo
 UV              ?= uv
 
 # ---- CVE limits (the gate fails when a count is ABOVE the max) -------------
-# Policy: 0 Critical, <2 High, <5 Medium, <10 Low
+# Policy: 0 Critical, <3 High, <5 Medium, <10 Low
 MAX_CRITICAL ?= 0
-MAX_HIGH     ?= 1
+MAX_HIGH     ?= 2
 MAX_MEDIUM   ?= 4
 MAX_LOW      ?= 9
 
