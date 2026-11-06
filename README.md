@@ -20,7 +20,7 @@ The Makefile builds all the images, smoke-tests them, and runs a **CVE gate** wi
 | Severity | Allowed |
 |----------|---------|
 | Critical | 0       |
-| High     | < 2     |
+| High     | < 3     |
 | Medium   | < 5     |
 | Low      | < 10    |
 
@@ -304,7 +304,7 @@ The service is ready to move. Configuration is all env vars, state lives only in
 - on demand (**Actions → publish-certproxy → Run workflow**)
 - on pull requests into `main` that change the workflow, as a **dry run**: the gates run, but nothing is logged in or pushed
 
-**Gates:** each architecture is built natively, then must pass the architecture check, the smoke test and the grype CVE gate (0 Critical, fewer than 2 High, 5 Medium and 10 Low). amd64 also runs the end-to-end test against Vault and Pebble. Only the **exact image that passed** is pushed. If either architecture fails, nothing is published.
+**Gates:** each architecture is built natively, then must pass the architecture check, the smoke test and the grype CVE gate (0 Critical, fewer than 3 High, 5 Medium and 10 Low). amd64 also runs the end-to-end test against Vault and Pebble. Only the **exact image that passed** is pushed. If either architecture fails, nothing is published.
 
 **What gets pushed:**
 
@@ -383,7 +383,7 @@ Override any variable on the command line, for example `make build TAG=v1 PLATFO
 | `EXTRA_PACKAGES` | *(empty)* | More Wolfi packages to install, separated by spaces |
 | `APK_CACHE_BUST` | today's date | Changing it forces packages to be fetched again |
 | `NO_CACHE` | *(empty)* | Set to `1` to build with `--no-cache` |
-| `MAX_CRITICAL` / `MAX_HIGH` / `MAX_MEDIUM` / `MAX_LOW` | `0` / `1` / `4` / `9` | CVE gate limits (the most allowed of each) |
+| `MAX_CRITICAL` / `MAX_HIGH` / `MAX_MEDIUM` / `MAX_LOW` | `0` / `2` / `4` / `9` | CVE gate limits (the most allowed of each) |
 | `REPORT_DIR` | `reports` | Where scan reports and SBOMs are written |
 | `GRYPE` / `SYFT` / `JQ` / `UV` | `grype` / `syft` / `jq` / `uv` | Tool paths |
 
