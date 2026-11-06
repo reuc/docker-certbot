@@ -1,6 +1,6 @@
-acme==5.8.0 \
-    --hash=sha256:44c4edb53acdd3fa8402cb29c78a6d1bd2005d777a4d2fcd12663bbc3c147b34 \
-    --hash=sha256:637501767248156545d85c23b806381ac346c5eac759f8e35052af85b7bb3933
+acme==5.9.0 \
+    --hash=sha256:a646011d6c7c843d89c91a901a2bf450752621f6431f19851bec1222c94446bd \
+    --hash=sha256:bbfd9cf42797b5378a05833c0fd917de9418b69e03cbdb39abb7e85e5532fe75
     # via
     #   certbot
     #   certbot-dns-cloudflare
@@ -40,9 +40,9 @@ botocore==1.43.115 \
     # via
     #   boto3
     #   s3transfer
-certbot==5.8.0 \
-    --hash=sha256:a4a2c7b0459bb626b3791ef07b6df26bbb222d2324783ba3e60f76c0933eec87 \
-    --hash=sha256:c06793e6a0169b07ee09e11e6a017c7d5a77310055d693fffd66c53363ab87ff
+certbot==5.9.0 \
+    --hash=sha256:b7adb889d4dc5ee81bc4b606de2576c564e701d6addef3b8685e90e2a4991299 \
+    --hash=sha256:bf7d096c8b7e595d8c8dd2c1374db2bd11f53ea33d1748aaea805e81007710d8
     # via
     #   -r requirements.in
     #   certbot-dns-cloudflare
