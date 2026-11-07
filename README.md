@@ -1,6 +1,6 @@
 # wolfi-polyglot
 
-[![build-and-scan](https://github.com/reuc/docker-wolfi/actions/workflows/build-and-scan.yml/badge.svg)](https://github.com/reuc/docker-wolfi/actions/workflows/build-and-scan.yml)
+[![build-and-scan](https://github.com/reuc/wolfi-polyglot/actions/workflows/build-and-scan.yml/badge.svg)](https://github.com/reuc/wolfi-polyglot/actions/workflows/build-and-scan.yml)
 
 Hardened container images built on [Wolfi](https://github.com/wolfi-dev):
 
@@ -327,8 +327,8 @@ All tags except the date are **rebuilt and moved by the daily run**: `sha-<commi
 IMAGE=docker.io/<DOCKER_USER>/wolfi-certproxy@sha256:<digest>
 cosign verify "$IMAGE" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  --certificate-identity-regexp '^https://github.com/reuc/docker-wolfi/\.github/workflows/publish-certproxy\.yml@'
-gh attestation verify "oci://$IMAGE" -R reuc/docker-wolfi
+  --certificate-identity-regexp '^https://github.com/reuc/wolfi-polyglot/\.github/workflows/publish-certproxy\.yml@'
+gh attestation verify "oci://$IMAGE" -R reuc/wolfi-polyglot
 ```
 
 ## Requirements
