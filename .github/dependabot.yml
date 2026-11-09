@@ -17,6 +17,11 @@ updates:
     directory: "/certbot"
     schedule:
       interval: "weekly"
+    # Certbot and its plugins release together and are pinned to the same
+    # version, so bump them (and their dependencies) in one PR, majors included.
+    groups:
+      certbot:
+        patterns: ["*"]
 
   # Actions used by .github/workflows
   - package-ecosystem: "github-actions"
