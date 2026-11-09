@@ -28,13 +28,42 @@ permissions:
   contents: read
 
 jobs:
-  snyk:
-    permissions:
-      contents: read 
-      security-events: write 
-      actions: read 
+  # Pull requests from Dependabot and from forks get no Actions secrets, so
+  # SNYK_TOKEN is empty there and every Snyk command fails with 401 (SNYK-0005).
+  # Skip the scan on those pull requests; anywhere else a missing token is a
+  # configuration error. To scan Dependabot PRs too, add SNYK_TOKEN as a
+  # Dependabot secret: gh secret set SNYK_TOKEN --app dependabot
+  token:
     runs-on: ubuntu-latest
-    
+    permissions: {}
+    outputs:
+      available: ${{ steps.check.outputs.available }}
+    steps:
+      - name: Check for SNYK_TOKEN
+        id: check
+        env:
+          HAS_TOKEN: ${{ secrets.SNYK_TOKEN != '' }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$HAS_TOKEN" = true ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          elif [ "$EVENT" = pull_request ]; then
+            echo "::notice::SNYK_TOKEN is not available to this pull request (Dependabot or fork); skipping Snyk."
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Set the SNYK_TOKEN secret (Snyk API token)"
+            exit 1
+          fi
+
+  snyk:
+    needs: token
+    if: needs.token.outputs.available == 'true'
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    runs-on: ubuntu-latest
+
     # Move the environment variable here so ALL steps can see it
     env:
       SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
