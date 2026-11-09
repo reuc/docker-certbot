@@ -9,7 +9,7 @@ certbot-dns-gehirn==5.8.0
 certbot-dns-google==5.8.0
 certbot-dns-linode==5.8.0
 certbot-dns-luadns==5.8.0
-certbot-dns-nsone==5.8.0
+certbot-dns-nsone==5.9.0
 certbot-dns-ovh==5.8.0
 certbot-dns-rfc2136==5.8.0
 certbot-dns-route53==5.8.0
