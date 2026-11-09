@@ -5,7 +5,7 @@ certbot-dns-cloudflare==5.8.0
 certbot-dns-digitalocean==5.8.0
 certbot-dns-dnsimple==5.8.0
 certbot-dns-dnsmadeeasy==5.8.0
-certbot-dns-gehirn==5.8.0
+certbot-dns-gehirn==5.9.0
 certbot-dns-google==5.8.0
 certbot-dns-linode==5.8.0
 certbot-dns-luadns==5.8.0

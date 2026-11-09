@@ -74,9 +74,9 @@ certbot-dns-dnsmadeeasy==5.8.0 \
     --hash=sha256:515bba8fad13db2a910d9a0d70a3cd499ba29ebdcf23113c7571e856584c9572 \
     --hash=sha256:6ff6893a5963f44109c3973e23593d9b99c89f211a6af427cca67236b46c2a2e
     # via -r requirements.in
-certbot-dns-gehirn==5.8.0 \
-    --hash=sha256:73f4f354aa2b223c25368407204ec75852ffc2438f881626b4e720316a62a7b7 \
-    --hash=sha256:b2e28ba3be03b95514ab38657eb159e5f1ad6e9f45e60449dfa2186891a97192
+certbot-dns-gehirn==5.9.0 \
+    --hash=sha256:3fa077df1ee3bc78d19ff2fd13e7d677e4007bcc7d127c7a335adaf5a28ec2db \
+    --hash=sha256:dd9883157f77d75ab816bba23268bd67c4f1b5fd0fc8adbd5f0262658819d806
     # via -r requirements.in
 certbot-dns-google==5.8.0 \
     --hash=sha256:e9fbce5af1d4113ec6971f7597f216c91ce319f3ed7db70d633fb4702f32b625 \
