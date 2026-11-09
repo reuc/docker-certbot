@@ -90,9 +90,9 @@ certbot-dns-luadns==5.8.0 \
     --hash=sha256:431a4c477c352dedc0c24a837528e9da059b4ebd53c7e847b00f5f5c101ab7a1 \
     --hash=sha256:e7aeb723c824c1c3685dbfceb63fa7ed5344e99ed3060058de2d4e953b3310a4
     # via -r requirements.in
-certbot-dns-nsone==5.8.0 \
-    --hash=sha256:7c6b2035a0d01d2ecf44938352828d0d8114289c0e86b08aa83ea2ab8fef71d0 \
-    --hash=sha256:dadfac6dad4c4fc5dbbe3b02192e36609efe5bc68709ca04bbeaca64ca7dd79e
+certbot-dns-nsone==5.9.0 \
+    --hash=sha256:619c0dea115343fd6d46da04d9f177afd1ebe9035f210ab93096e4efd6ba4640 \
+    --hash=sha256:81f1f7828789d56a61701d3c89abd00fe600dbcb4ee5dd57b73b96147bb83818
     # via -r requirements.in
 certbot-dns-ovh==5.8.0 \
     --hash=sha256:da6e4e6e845e676abb23529f165a0237a0a8bb4b19913dfc6a4d36876624f810 \
