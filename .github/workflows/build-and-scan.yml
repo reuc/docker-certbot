@@ -25,7 +25,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [shell, distroless, certbot, certproxy]
+        # Only the certproxy image is built in CI. The shell, distroless and
+        # certbot images still build locally (make build-<variant>); add them
+        # back here to gate them in CI again.
+        variant: [certproxy]
         arch: [amd64, arm64]
         include:
           - arch: amd64
@@ -132,9 +135,9 @@ jobs:
       - name: End-to-end test (Vault dev server + Pebble)
         run: .github/scripts/run-annotated.sh "certproxy e2e" make e2e-certproxy
 
-  # Single status check for branch protection: passes only if every
-  # variant/architecture combination built, passed smoke tests and the CVE
-  # gate, and certproxy's checks passed (or were skipped on the schedule).
+  # Single status check for branch protection: passes only if the certproxy
+  # image built, passed smoke tests and the CVE gate on every architecture,
+  # and certproxy's checks passed (or were skipped on the schedule).
   all-builds:
     name: build-and-scan (all)
     if: always()

@@ -107,11 +107,12 @@ jobs:
       #     [ "$rc" -eq 3 ] && { echo "No IaC files found; nothing to scan."; exit 0; }
       #     exit "$rc"
 
-      - name: Build a Docker image
-        run: docker build -t your/image-to-test .
+      # Same build as build-and-scan (make sets the base image and build args).
+      - name: Build the certproxy image
+        run: make build-certproxy TAG=latest
 
       - name: Snyk Container monitor
-        run: snyk container monitor your/image-to-test --file=Dockerfile
+        run: snyk container monitor wolfi-certproxy:latest --file=Dockerfile.certproxy
 
       - name: Upload result to GitHub Code Scanning
         uses: github/codeql-action/upload-sarif@v4
