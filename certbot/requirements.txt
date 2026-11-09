@@ -62,9 +62,9 @@ certbot-dns-cloudflare==5.8.0 \
     --hash=sha256:372276cb7477af4799cffe22bb1ebb2dd6e9e226d0126117431e3a83866f8e3e \
     --hash=sha256:540870f24a7aa05d9057bfa70cb684094b4106838747e15990f498ef16b7d212
     # via -r requirements.in
-certbot-dns-digitalocean==5.8.0 \
-    --hash=sha256:5c001d5dd7710d5ef7e56b99261ad17a8b316da8d34a3c16ec3bc4b17203c7ce \
-    --hash=sha256:5c08b3a2c9ab097fa7c6122b972920082ae19077dbb374a3f8a121746ee35ee3
+certbot-dns-digitalocean==5.9.0 \
+    --hash=sha256:84093986c5ad51819dece62cf2a6278fa6cc87cacd7c166cdaeffdbba4b30786 \
+    --hash=sha256:9938eb2edb92099e76173475267b3aee91b02b5173e1fac971b9821d5a739c29
     # via -r requirements.in
 certbot-dns-dnsimple==5.8.0 \
     --hash=sha256:93a7dd4acf57ec7891bbfbcde02a19adeb8e820e4ed8dd10ffbcd269878c0974 \
