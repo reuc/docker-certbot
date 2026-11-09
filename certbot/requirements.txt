@@ -86,9 +86,9 @@ certbot-dns-linode==5.8.0 \
     --hash=sha256:6f8d22e530fe68e28d7d612b8acbd85d34c1f9d77e96032cd4821f56cfc6dda9 \
     --hash=sha256:bf3e6d71cbe5500a5fdea8b23f7b5a4008417a10d63d25939242b1adfbec2c95
     # via -r requirements.in
-certbot-dns-luadns==5.8.0 \
-    --hash=sha256:431a4c477c352dedc0c24a837528e9da059b4ebd53c7e847b00f5f5c101ab7a1 \
-    --hash=sha256:e7aeb723c824c1c3685dbfceb63fa7ed5344e99ed3060058de2d4e953b3310a4
+certbot-dns-luadns==5.9.0 \
+    --hash=sha256:8342eb9ef9c41b18a7483883fb1a4ec9e673ab81f8f8910a56109ba58be26384 \
+    --hash=sha256:b7971999481e013663e625cd12250cfeb01b045c2ffd82f31110431c038dbd56
     # via -r requirements.in
 certbot-dns-nsone==5.9.0 \
     --hash=sha256:619c0dea115343fd6d46da04d9f177afd1ebe9035f210ab93096e4efd6ba4640 \
