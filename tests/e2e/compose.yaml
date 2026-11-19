@@ -4,7 +4,7 @@ name: certproxy-e2e
 
 services:
   vault:
-    image: hashicorp/vault:2.2.1
+    image: hashicorp/vault:2.2.2
     command: ["server", "-dev", "-dev-root-token-id=root", "-dev-listen-address=0.0.0.0:8200"]
     environment:
       SKIP_SETCAP: "true"
@@ -12,7 +12,7 @@ services:
       - "127.0.0.1:8200:8200"
 
   pebble:
-    image: ghcr.io/letsencrypt/pebble:2.10.1
+    image: ghcr.io/letsencrypt/pebble:2.10.3
     command: ["-config", "/test/config/pebble-config.json"]
     environment:
       PEBBLE_VA_ALWAYS_VALID: "1"

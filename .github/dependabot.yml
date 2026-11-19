@@ -8,9 +8,10 @@ updates:
     directory: "/certproxy"
     schedule:
       interval: "weekly"
+    # One PR for all crate bumps, including 0.x "minor" and major ones.
     groups:
-      cargo-minor-patch:
-        update-types: ["minor", "patch"]
+      cargo:
+        patterns: ["*"]
 
   # Certbot and DNS plugins (pip-compile requirements.in -> hash-locked requirements.txt)
   - package-ecosystem: "pip"
@@ -37,3 +38,6 @@ updates:
     directory: "/tests/e2e"
     schedule:
       interval: "weekly"
+    groups:
+      e2e-images:
+        patterns: ["*"]
